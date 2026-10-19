@@ -132,6 +132,19 @@ window.__ModuleLoader__.load({
         lineHeight: '22px',
         cursor: 'pointer',
       },
+      dangerConfirm: {
+        height: '32px',
+        padding: '0 12px',
+        border: '0.5px solid var(--dsw-alias-state-error-primary)',
+        borderRadius: 'var(--dsw-radius-md, 8px)',
+        background: 'transparent',
+        color: 'var(--dsw-alias-state-error-primary)',
+        font: 'inherit',
+        fontSize: '13px',
+        lineHeight: '20px',
+        cursor: 'pointer',
+      },
+      confirmGroup: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
       actions: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
       spacer: { flex: '1 1 auto' },
       disabled: { opacity: 0.4, cursor: 'default' },
@@ -337,11 +350,7 @@ window.__ModuleLoader__.load({
           setMessage(undefined)
         }
 
-        const clearKey = async () => {
-          if (!confirmClear) {
-            setConfirmClear(true)
-            return
-          }
+        const removeKey = async () => {
           setConfirmClear(false)
           setBusy(true)
           setMessage(undefined)
@@ -433,12 +442,28 @@ window.__ModuleLoader__.load({
               }, '放弃修改'),
               h('button', { type: 'button', style: { ...S.secondary, ...(busy ? S.disabled : {}) }, disabled: busy, onClick: reload }, '重新读取'),
               h('div', { style: S.spacer }),
-              h('button', {
-                type: 'button',
-                style: { ...S.danger, ...(!writable || busy ? S.disabled : {}) },
-                disabled: !writable || busy,
-                onClick: clearKey,
-              }, confirmClear ? `确认清除 ${keyRef}？` : '清除 API Key'),
+              confirmClear
+                ? h('div', { style: S.confirmGroup },
+                    h('span', { style: S.hintWarn }, `确认清除 ${keyRef}？`),
+                    h('button', {
+                      type: 'button',
+                      style: { ...S.dangerConfirm, ...(busy ? S.disabled : {}) },
+                      disabled: busy,
+                      onClick: removeKey,
+                    }, '确认清除'),
+                    h('button', {
+                      type: 'button',
+                      style: { ...S.small, ...(busy ? S.disabled : {}) },
+                      disabled: busy,
+                      onClick: () => setConfirmClear(false),
+                    }, '取消'),
+                  )
+                : h('button', {
+                    type: 'button',
+                    style: { ...S.danger, ...(!writable || busy ? S.disabled : {}) },
+                    disabled: !writable || busy,
+                    onClick: () => setConfirmClear(true),
+                  }, '清除 API Key'),
             ),
             message === undefined ? null : h('span', { style: messageBad ? S.hintError : S.hintOk, role: 'status' }, message),
           ) : null,
