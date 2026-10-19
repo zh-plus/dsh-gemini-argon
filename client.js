@@ -35,6 +35,7 @@ window.__ModuleLoader__.load({
       grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' },
       field: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0 },
       label: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
+      fieldHint: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
       input: {
         width: '100%',
         height: '32px',
@@ -75,10 +76,10 @@ window.__ModuleLoader__.load({
     }
 
     const BASIC_FIELDS = [
-      { key: 'project', label: 'Google Cloud 项目', kind: 'text', placeholder: 'my-project' },
+      { key: 'project', label: 'Google Cloud 项目', kind: 'text', placeholder: 'my-project 或 123456789012', hint: 'Project ID 或 Project Number 均可；在 Cloud Console 的项目信息卡里查看，使用 service account JSON 时可留空' },
       { key: 'auth', label: '认证方式', kind: 'select', options: [['auto', 'auto（有 JSON 用 JSON）'], ['api-key', 'API Key'], ['service-account', 'Service Account JSON']] },
       { key: 'apiKeyEnv', label: 'API Key 凭据名', kind: 'text', placeholder: DEFAULT_KEY_REF },
-      { key: 'serviceAccountFile', label: 'Service Account JSON 路径', kind: 'text', placeholder: '~/.config/gcloud/argon-sa.json' },
+      { key: 'serviceAccountFile', label: 'Service Account JSON 路径', kind: 'text', placeholder: '~/.config/gcloud/argon-sa.json', hint: '留空时读取 GOOGLE_APPLICATION_CREDENTIALS；JSON 里的 project_id 会自动作为 project' },
       { key: 'model', label: '模型 ID', kind: 'text', placeholder: 'gemini-4-argon' },
       { key: 'modelName', label: '显示名', kind: 'text', placeholder: 'Gemini 4 Argon' },
       { key: 'thinkingLevel', label: '思考档位', kind: 'select', options: [['off', 'off（最低档 LOW）'], ['low', 'low（返回思考摘要）'], ['medium', 'medium'], ['high', 'high']] },
@@ -124,6 +125,7 @@ window.__ModuleLoader__.load({
               })
             : h('select', { value: value === '' ? options[0][0] : value, onChange, style: S.input },
                 options.map(([optionValue, label]) => h('option', { key: optionValue, value: optionValue }, label))),
+          field.hint === undefined ? null : h('span', { style: S.fieldHint }, field.hint),
         )
       }
 

@@ -63,9 +63,44 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
 
 ### 3. 配置 Google Cloud Project
 
-`project` 必须能解析到，插件支持以下任一来源（优先级从高到低）：
+#### `project` 是什么？
 
-1. profile 补丁里的 `project`；
+Google Cloud 项目有两个等价标识，Vertex 的 `projects/{project}` 路径两者都接受，插件也都支持：
+
+- **Project ID**：字母数字和连字符，例如 `my-argon-project-123456`
+- **Project Number**：纯数字，例如 `397502380865`
+
+你在配置里看到的一串数字就是 **Project Number**，不是随机数。Express API Key 本身不携带 project 信息，最初的数字是从 Vertex 返回的 404 错误里读到的：
+
+```
+Publisher model `projects/397502380865/locations/asia-southeast1/...`
+```
+
+#### 怎么拿到自己的 project？
+
+1. **Cloud Console**：顶部项目选择器选中项目，打开项目信息卡即可看到 Project ID 和 Project number。也可以直接打开
+   `https://console.cloud.google.com/home/dashboard?project=<PROJECT_ID>`，在 “Project info” 卡片里查看。
+2. **gcloud**：
+
+   ```sh
+   gcloud config get-value project
+   # 输出 Project ID
+
+   gcloud projects describe "$(gcloud config get-value project)" \
+     --format='value(projectNumber)'
+   # 输出 Project Number
+   ```
+
+3. **Service Account JSON**：文件里的 `project_id` 就是项目 ID，使用 JSON 密钥时插件会自动读取，不需要再填。
+4. **只有 Express Key**：Key 不直接暴露 project。如果不知道它属于哪个项目，用这个 Key 调一次 Vertex，错误信息里通常会带 `projects/<number>`；也可以到创建该 Key 的 Cloud Console / AI Studio 项目里查。
+
+填 Project ID 或 Project Number 都可以，注意不要带空格或多余字符。`project` 不是密钥，但仍属于账号信息，公开仓库里不要写死。
+
+#### 配置来源
+
+插件支持以下任一来源（优先级从高到低）：
+
+1. profile 补丁或 **Settings → Models** 里的 `project`；
 2. service account JSON 里的 `project_id`（使用 JSON 密钥时自动读取）；
 3. 环境变量 `GOOGLE_CLOUD_PROJECT`。
 

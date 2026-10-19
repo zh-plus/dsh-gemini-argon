@@ -399,8 +399,8 @@ export function resolveOptions(raw) {
   if (project.length === 0) {
     throw new Error(
       useServiceAccount
-        ? 'llm-gemini-argon: project is required; set config.project, add project_id to the service account JSON, or export GOOGLE_CLOUD_PROJECT'
-        : 'llm-gemini-argon: project is required; set config.project or export GOOGLE_CLOUD_PROJECT (Express API keys do not carry a project)',
+        ? 'llm-gemini-argon: project is required; set the Cloud Console project ID/number, add project_id to the service account JSON, or export GOOGLE_CLOUD_PROJECT'
+        : 'llm-gemini-argon: project is required; set the Cloud Console project ID/number (Project info card) or export GOOGLE_CLOUD_PROJECT — Express API keys do not carry a project',
     )
   }
   if (!/^[A-Za-z0-9][A-Za-z0-9:._-]*$/u.test(project)) {
