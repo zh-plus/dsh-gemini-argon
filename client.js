@@ -6,6 +6,10 @@
  * writes the plugin's volatile config through `configForms`, so fields land in
  * the profile patch exactly like any built-in provider, and stores the API key
  * through the credentials service.
+ *
+ * Styling follows the Models page's own typography and design tokens: 12/18
+ * field labels, 14/22 inputs and buttons, 36px controls, and the shared
+ * settings-card surfaces, so the card does not stand out as a foreign widget.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-gemini-argon',
@@ -19,23 +23,38 @@ window.__ModuleLoader__.load({
     const inject = ['slots', 'configForms', 'remote.credentials']
 
     const S = {
-      card: {
+      editor: {
         display: 'flex',
         flexDirection: 'column',
-        gap: '10px',
-        border: '0.5px solid var(--dsw-alias-border-l3)',
+        gap: '14px',
+        padding: '14px 16px',
         borderRadius: 'var(--dsw-radius-lg, 12px)',
-        padding: '10px 12px',
         background: 'var(--dsw-alias-bg-module-platform)',
+        color: 'var(--dsw-alias-label-primary)',
+        fontFamily: 'inherit',
       },
-      head: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+      head: { display: 'flex', alignItems: 'flex-start', gap: '12px', justifyContent: 'space-between', flexWrap: 'wrap' },
+      headText: { display: 'flex', flexDirection: 'column', gap: '2px', minWidth: 0 },
+      title: { fontSize: '14px', lineHeight: '22px', fontWeight: 500, color: 'var(--dsw-alias-label-primary)' },
       hint: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-tertiary)' },
-      statusOk: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-success-primary)' },
-      statusBad: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary)' },
-      grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '10px' },
-      field: { display: 'flex', flexDirection: 'column', gap: '4px', minWidth: 0 },
-      label: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary)' },
-      fieldHint: { fontSize: '11px', lineHeight: '16px', color: 'var(--dsw-alias-label-tertiary)' },
+      hintError: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary)' },
+      hintOk: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-success-primary)' },
+      hintWarn: { fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-warn-label, var(--dsw-alias-label-secondary))' },
+      headActions: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+      sectionTitle: {
+        display: 'flex',
+        alignItems: 'center',
+        gap: '8px',
+        fontSize: '12px',
+        lineHeight: '18px',
+        fontWeight: 500,
+        color: 'var(--dsw-alias-label-secondary)',
+      },
+      divider: { height: '0.5px', background: 'var(--dsw-alias-border-l2)', width: '100%' },
+      grid: { display: 'grid', gridTemplateColumns: 'repeat(2, minmax(0, 1fr))', gap: '12px' },
+      field: { display: 'flex', flexDirection: 'column', gap: '6px', minWidth: 0 },
+      wide: { gridColumn: '1 / -1' },
+      label: { fontSize: '12px', lineHeight: '18px', fontWeight: 500, color: 'var(--dsw-alias-label-secondary)' },
       input: {
         width: '100%',
         height: '32px',
@@ -47,42 +66,97 @@ window.__ModuleLoader__.load({
         padding: '0 10px',
         fontSize: '14px',
         lineHeight: '22px',
-        font: 'inherit',
+        fontFamily: 'inherit',
       },
-      wide: { gridColumn: '1 / -1' },
-      actions: { display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' },
+      inputWithAction: { display: 'flex', gap: '6px', alignItems: 'center' },
+      inputGrow: { flex: '1 1 0', minWidth: 0 },
+      keyWrap: { position: 'relative', display: 'flex', alignItems: 'center' },
+      keyToggle: {
+        position: 'absolute',
+        right: '1px',
+        height: '30px',
+        padding: '0 10px',
+        border: 'none',
+        borderRadius: 'var(--dsw-radius-md, 8px)',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-tertiary)',
+        font: 'inherit',
+        fontSize: '12px',
+        lineHeight: '18px',
+        cursor: 'pointer',
+      },
       primary: {
-        height: '32px',
+        height: '36px',
         padding: '0 14px',
         border: 'none',
         borderRadius: 'var(--dsw-radius-md, 8px)',
         background: 'var(--dsw-alias-button-primary-fill)',
         color: 'var(--dsw-alias-label-primary-foreground)',
         font: 'inherit',
-        fontSize: '13px',
+        fontSize: '14px',
+        lineHeight: '22px',
         cursor: 'pointer',
       },
       secondary: {
-        height: '32px',
-        padding: '0 12px',
+        height: '36px',
+        padding: '0 14px',
         border: '0.5px solid var(--dsw-alias-border-l3)',
         borderRadius: 'var(--dsw-radius-md, 8px)',
         background: 'transparent',
         color: 'var(--dsw-alias-label-primary)',
         font: 'inherit',
-        fontSize: '13px',
+        fontSize: '14px',
+        lineHeight: '22px',
         cursor: 'pointer',
+      },
+      small: {
+        height: '28px',
+        padding: '0 10px',
+        border: '0.5px solid var(--dsw-alias-border-l3)',
+        borderRadius: 'var(--dsw-radius-sm, 6px)',
+        background: 'transparent',
+        color: 'var(--dsw-alias-label-primary)',
+        font: 'inherit',
+        fontSize: '12px',
+        lineHeight: '18px',
+        cursor: 'pointer',
+      },
+      danger: {
+        height: '36px',
+        padding: '0 10px',
+        border: 'none',
+        background: 'transparent',
+        color: 'var(--dsw-alias-state-error-primary)',
+        font: 'inherit',
+        fontSize: '14px',
+        lineHeight: '22px',
+        cursor: 'pointer',
+      },
+      actions: { display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' },
+      spacer: { flex: '1 1 auto' },
+      disabled: { opacity: 0.4, cursor: 'default' },
+      details: { display: 'flex', flexDirection: 'column', gap: '10px' },
+      summary: {
+        fontSize: '12px',
+        lineHeight: '18px',
+        fontWeight: 500,
+        color: 'var(--dsw-alias-label-secondary)',
+        cursor: 'pointer',
+        width: 'fit-content',
       },
     }
 
-    const BASIC_FIELDS = [
+    const CONNECTION_FIELDS = [
       { key: 'project', label: 'Google Cloud 项目', kind: 'text', placeholder: 'my-project 或 123456789012', hint: 'Project ID 或 Project Number 均可；在 Cloud Console 的项目信息卡里查看，使用 service account JSON 时可留空' },
       { key: 'auth', label: '认证方式', kind: 'select', options: [['auto', 'auto（有 JSON 用 JSON）'], ['api-key', 'API Key'], ['service-account', 'Service Account JSON']] },
-      { key: 'apiKeyEnv', label: 'API Key 凭据名', kind: 'text', placeholder: DEFAULT_KEY_REF },
+      { key: 'apiKeyEnv', label: 'API Key 凭据名', kind: 'text', placeholder: DEFAULT_KEY_REF, hint: '凭据服务里的名字，默认 GOOGLE_VERTEX_API_KEY' },
       { key: 'serviceAccountFile', label: 'Service Account JSON 路径', kind: 'text', browse: true, placeholder: '~/.config/gcloud/argon-sa.json', hint: '留空时读取 GOOGLE_APPLICATION_CREDENTIALS；JSON 里的 project_id 会自动作为 project' },
+    ]
+
+    const MODEL_FIELDS = [
       { key: 'model', label: '模型 ID', kind: 'text', placeholder: 'gemini-4-argon' },
       { key: 'modelName', label: '显示名', kind: 'text', placeholder: 'Gemini 4 Argon' },
-      { key: 'thinkingLevel', label: '思考档位', kind: 'select', options: [['off', 'off（最低档 LOW）'], ['low', 'low（返回思考摘要）'], ['medium', 'medium'], ['high', 'high']] },
+      { key: 'thinkingLevel', label: '思考档位', kind: 'select', options: [['off', 'off（最低档 LOW）'], ['low', 'low（返回思考摘要）'], ['medium', 'medium'], ['high', 'high']], hint: '4 Argon 无法真正关闭思考；off 固定最低档并隐藏思考内容' },
       { key: 'proxy', label: '代理', kind: 'text', placeholder: 'auto / direct / http://127.0.0.1:7897' },
     ]
 
@@ -96,6 +170,8 @@ window.__ModuleLoader__.load({
       { key: 'imageMaxBytes', label: '单图最大字节', kind: 'number' },
     ]
 
+    const ALL_FIELDS = [...CONNECTION_FIELDS, ...MODEL_FIELDS, ...ADVANCED_FIELDS]
+
     function apply(ctx) {
       function useForm(form) {
         return React.useSyncExternalStore(
@@ -103,6 +179,16 @@ window.__ModuleLoader__.load({
           () => form.getSnapshot(),
           () => form.getSnapshot(),
         )
+      }
+
+      function normalized(field, value) {
+        if (value === undefined || value === null) return undefined
+        if (field.kind === 'number') {
+          const number = Number(String(value).trim())
+          return Number.isFinite(number) ? number : String(value).trim()
+        }
+        const text = String(value).trim()
+        return text === '' ? undefined : text
       }
 
       function fieldNode(field, draft, setDraft, onBrowse) {
@@ -120,33 +206,39 @@ window.__ModuleLoader__.load({
               placeholder: field.placeholder,
               onChange,
               style: S.input,
+              'aria-label': field.label,
+              ...(field.kind === 'number' ? { min: 1, step: 1 } : {}),
             })
-          : h('select', { value: value === '' ? options[0][0] : value, onChange, style: S.input },
+          : h('select', { value: value === '' ? options[0][0] : value, onChange, style: S.input, 'aria-label': field.label },
               options.map(([optionValue, label]) => h('option', { key: optionValue, value: optionValue }, label)))
         const withBrowse = field.browse === true && onBrowse !== undefined
-          ? h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
-              h('div', { style: { flex: '1 1 0', minWidth: 0 } }, control),
-              h('button', { type: 'button', style: S.secondary, onClick: onBrowse }, '浏览…'),
+          ? h('div', { style: S.inputWithAction },
+              h('div', { style: S.inputGrow }, control),
+              h('button', { type: 'button', style: S.small, onClick: onBrowse }, '浏览…'),
             )
           : control
-        return h('label', { key: field.key, style: field.wide === true ? { ...S.field, ...S.wide } : S.field },
+        return h('div', { key: field.key, style: field.wide === true ? { ...S.field, ...S.wide } : S.field },
           h('span', { style: S.label }, field.label),
           withBrowse,
-          field.hint === undefined ? null : h('span', { style: S.fieldHint }, field.hint),
+          field.hint === undefined ? null : h('span', { style: S.hint }, field.hint),
         )
       }
 
       function ProviderCard(props) {
         const [open, setOpen] = React.useState(false)
-        const [draft, setDraft] = React.useState(null)
         const [keyDraft, setKeyDraft] = React.useState('')
+        const [showKey, setShowKey] = React.useState(false)
         const [busy, setBusy] = React.useState(false)
         const [message, setMessage] = React.useState(undefined)
         const [messageBad, setMessageBad] = React.useState(false)
+        const [confirmClear, setConfirmClear] = React.useState(false)
         const fileInput = React.useRef(null)
         const form = React.useMemo(() => ctx.configForms.get(NS), [])
         const snap = useForm(form)
         const value = snap.value
+        // Seed from the first ready snapshot so opening the card never flashes a
+        // loading row; the effect only fills the gap when the mirror arrives late.
+        const [draft, setDraft] = React.useState(() => (value === undefined ? null : { ...value }))
 
         React.useEffect(() => {
           if (draft === null && value !== undefined) setDraft({ ...value })
@@ -155,6 +247,19 @@ window.__ModuleLoader__.load({
         const keyRef = ((draft?.apiKeyEnv ?? value?.apiKeyEnv ?? DEFAULT_KEY_REF) || DEFAULT_KEY_REF).trim() || DEFAULT_KEY_REF
         const ready = snap.status === 'ready' && draft !== null
         const writable = snap.writable === true
+        const authMode = draft?.auth ?? value?.auth ?? 'auto'
+        const serviceAccountConfigured = authMode === 'service-account'
+          || (authMode === 'auto' && ((draft?.serviceAccountFile ?? value?.serviceAccountFile) !== undefined))
+        const dirty = React.useMemo(() => {
+          if (value === undefined || draft === null) return false
+          return ALL_FIELDS.some((field) => normalized(field, value[field.key]) !== normalized(field, draft[field.key]))
+        }, [draft, value])
+
+        React.useEffect(() => {
+          if (!confirmClear) return undefined
+          const timer = setTimeout(() => setConfirmClear(false), 4000)
+          return () => clearTimeout(timer)
+        }, [confirmClear])
 
         const chooseFile = (event) => {
           const file = event.target.files?.[0]
@@ -177,18 +282,13 @@ window.__ModuleLoader__.load({
           setMessage(undefined)
           try {
             const ops = []
-            for (const field of [...BASIC_FIELDS, ...ADVANCED_FIELDS]) {
-              const before = value[field.key]
-              let after = draft[field.key]
-              if (typeof after === 'string') after = after.trim() === '' ? undefined : after.trim()
-              if (field.kind === 'number' && after !== undefined) {
-                const parsed = Number(after)
-                if (!Number.isFinite(parsed) || parsed <= 0) {
-                  setMessageBad(true)
-                  setMessage(`${field.label} 必须是正数`)
-                  return
-                }
-                after = parsed
+            for (const field of ALL_FIELDS) {
+              const before = normalized(field, value[field.key])
+              const after = normalized(field, draft[field.key])
+              if (field.kind === 'number' && after !== undefined && (typeof after !== 'number' || after <= 0)) {
+                setMessageBad(true)
+                setMessage(`${field.label} 必须是正数`)
+                return
               }
               if (after === before) continue
               ops.push(after === undefined ? { op: 'unset', path: [field.key] } : { op: 'set', path: [field.key], value: after })
@@ -224,11 +324,25 @@ window.__ModuleLoader__.load({
 
         const reload = () => {
           setDraft(null)
+          setKeyDraft('')
+          setConfirmClear(false)
           setMessage(undefined)
           void ctx.configForms.describe().load()
         }
 
+        const discard = () => {
+          setDraft(value === undefined ? null : { ...value })
+          setKeyDraft('')
+          setConfirmClear(false)
+          setMessage(undefined)
+        }
+
         const clearKey = async () => {
+          if (!confirmClear) {
+            setConfirmClear(true)
+            return
+          }
+          setConfirmClear(false)
           setBusy(true)
           setMessage(undefined)
           try {
@@ -240,25 +354,36 @@ window.__ModuleLoader__.load({
           }
         }
 
-        const status = props.keyConfigured === true
-          ? h('span', { style: S.statusOk }, `API Key 已配置（${keyRef}）`)
-          : h('span', { style: S.hint }, `API Key 未配置（${keyRef}）`)
+        const statusDot = serviceAccountConfigured
+          ? h('span', { style: S.hint }, '认证：Service Account JSON')
+          : props.keyConfigured === true
+            ? h('span', { style: S.hintOk }, `认证：API Key 已配置（${keyRef}）`)
+            : h('span', { style: S.hint }, `API Key 未配置（${keyRef}）`)
+
+        const head = h('div', { style: S.head },
+          h('div', { style: S.headText },
+            h('span', { style: S.title }, 'Gemini 4 Argon 配置'),
+            h('span', { style: S.hint }, '项目、认证、模型、思考档位与代理；保存后下一次模型请求生效'),
+          ),
+          h('div', { style: S.headActions },
+            dirty ? h('span', { style: S.hintWarn }, '有未保存的修改') : null,
+            statusDot,
+            h('button', { type: 'button', style: S.secondary, onClick: () => setOpen((current) => !current) }, open ? '收起' : '编辑配置'),
+          ),
+        )
 
         if (open && !ready) {
-          return h('div', { style: S.card, 'data-gemini-argon-config': '' },
-            h('div', { style: S.head },
+          return h('div', { style: S.editor, 'data-gemini-argon-config': '' },
+            head,
+            h('div', { style: S.actions },
               h('span', { style: S.hint }, snap.status === 'loading' ? '正在读取配置…' : '配置暂不可用'),
-              h('button', { type: 'button', style: S.secondary, disabled: busy, onClick: reload }, '重新读取'),
+              h('button', { type: 'button', style: S.small, disabled: busy, onClick: reload }, '重新读取'),
             ),
           )
         }
 
-        return h('div', { style: S.card, 'data-gemini-argon-config': '' },
-          h('div', { style: S.head },
-            h('span', { style: S.hint }, '项目、认证、模型、思考档位与代理可直接在这里编辑'),
-            h('button', { type: 'button', style: S.secondary, onClick: () => setOpen((current) => !current) }, open ? '收起' : '编辑配置'),
-            status,
-          ),
+        return h('div', { style: S.editor, 'data-gemini-argon-config': '' },
+          head,
           open ? h(React.Fragment, null,
             h('input', {
               type: 'file',
@@ -267,29 +392,55 @@ window.__ModuleLoader__.load({
               style: { display: 'none' },
               onChange: chooseFile,
             }),
-            h('div', { style: S.grid }, BASIC_FIELDS.map((field) => fieldNode(field, draft, setDraft, () => fileInput.current?.click()))),
-            h('label', { style: { ...S.field, ...S.wide } },
-              h('span', { style: S.label }, 'API Key（留空表示保持已保存的值）'),
-              h('input', {
-                type: 'password',
-                value: keyDraft,
-                placeholder: props.keyConfigured === true ? '已保存，留空即不修改' : '粘贴 Vertex AI Express API Key',
-                onChange: (event) => setKeyDraft(event.target.value),
-                style: S.input,
-                autoComplete: 'off',
-              }),
-            ),
-            h('details', { style: { ...S.field, ...S.wide } },
-              h('summary', { style: { ...S.label, cursor: 'pointer' } }, '高级设置'),
+            h('div', { style: S.sectionTitle }, '连接'),
+            h('div', { style: S.grid }, CONNECTION_FIELDS.map((field) => fieldNode(field, draft, setDraft, () => fileInput.current?.click()))),
+            h('div', { style: S.divider }),
+            h('div', { style: S.sectionTitle }, '模型与思考'),
+            h('div', { style: S.grid }, MODEL_FIELDS.map((field) => fieldNode(field, draft, setDraft))),
+            h('details', { style: S.details },
+              h('summary', { style: S.summary }, '高级设置'),
               h('div', { style: { ...S.grid, marginTop: '10px' } }, ADVANCED_FIELDS.map((field) => fieldNode(field, draft, setDraft))),
             ),
-            h('div', { style: S.actions },
-              h('button', { type: 'button', style: S.primary, disabled: !ready || !writable || busy, onClick: save }, busy ? '保存中…' : '保存'),
-              h('button', { type: 'button', style: S.secondary, disabled: busy, onClick: reload }, '重新读取'),
-              h('button', { type: 'button', style: S.secondary, disabled: !writable || busy, onClick: clearKey }, '清除 API Key'),
-              ready ? null : h('span', { style: S.hint }, snap.status === 'loading' ? '正在读取配置…' : '配置暂不可用'),
+            h('div', { style: S.divider }),
+            h('div', { style: S.field },
+              h('span', { style: S.label }, `API Key（${keyRef}）`),
+              h('div', { style: S.keyWrap },
+                h('input', {
+                  type: showKey ? 'text' : 'password',
+                  value: keyDraft,
+                  placeholder: props.keyConfigured === true ? '已保存，留空即不修改' : '粘贴 Vertex AI Express API Key',
+                  onChange: (event) => setKeyDraft(event.target.value),
+                  style: { ...S.input, paddingRight: '56px' },
+                  autoComplete: 'off',
+                  'aria-label': 'API Key',
+                }),
+                h('button', { type: 'button', style: S.keyToggle, onClick: () => setShowKey((current) => !current) }, showKey ? '隐藏' : '显示'),
+              ),
+              h('span', { style: S.hint }, '写入 DSH credentials 服务；不会保存到配置文件'),
             ),
-            message === undefined ? null : h('span', { style: messageBad ? S.statusBad : S.statusOk }, message),
+            h('div', { style: S.actions },
+              h('button', {
+                type: 'button',
+                style: { ...S.primary, ...((!dirty && keyDraft.trim().length === 0) || !writable || busy ? S.disabled : {}) },
+                disabled: (!dirty && keyDraft.trim().length === 0) || !writable || busy,
+                onClick: save,
+              }, busy ? '保存中…' : '保存'),
+              h('button', {
+                type: 'button',
+                style: { ...S.secondary, ...((!dirty && keyDraft.trim().length === 0) || busy ? S.disabled : {}) },
+                disabled: (!dirty && keyDraft.trim().length === 0) || busy,
+                onClick: discard,
+              }, '放弃修改'),
+              h('button', { type: 'button', style: { ...S.secondary, ...(busy ? S.disabled : {}) }, disabled: busy, onClick: reload }, '重新读取'),
+              h('div', { style: S.spacer }),
+              h('button', {
+                type: 'button',
+                style: { ...S.danger, ...(!writable || busy ? S.disabled : {}) },
+                disabled: !writable || busy,
+                onClick: clearKey,
+              }, confirmClear ? `确认清除 ${keyRef}？` : '清除 API Key'),
+            ),
+            message === undefined ? null : h('span', { style: messageBad ? S.hintError : S.hintOk, role: 'status' }, message),
           ) : null,
         )
       }
