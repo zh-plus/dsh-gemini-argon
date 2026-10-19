@@ -74,7 +74,7 @@ const MAX_ERROR_BODY = 4000
 
 export const Config = z.object({
   /** Credential reference resolved through the credentials service (or the launch environment). */
-  apiKeyEnv: z.string().default(DEFAULT_API_KEY_ENV).role('credential-ref').volatile(),
+  apiKeyEnv: z.string().default('').role('credential-ref').volatile(),
   /**
    * `auto` uses a service account when one is configured and the API key
    * otherwise; `api-key` and `service-account` force one method.
@@ -420,8 +420,7 @@ export function resolveOptions(raw) {
   if (!THINKING_LEVELS.includes(thinkingLevel)) {
     throw new Error(`llm-gemini-argon: thinkingLevel must be one of ${THINKING_LEVELS.join(', ')}`)
   }
-  const apiKeyEnv = String(raw.apiKeyEnv ?? DEFAULT_API_KEY_ENV).trim()
-  if (apiKeyEnv.length === 0) throw new Error('llm-gemini-argon: apiKeyEnv must not be empty')
+  const apiKeyEnv = String(raw.apiKeyEnv ?? '').trim() || DEFAULT_API_KEY_ENV
 
   const proxy = String(raw.proxy ?? 'auto').trim()
   if (proxy !== '' && proxy !== 'auto' && proxy !== 'direct') {
@@ -895,6 +894,45 @@ function statusTextOf(response) {
   return response.statusText || ''
 }
 
+/** The countTokens endpoint: a real, billable-nothing round trip for connectivity tests. */
+function countTokensUrl(config, model) {
+  const path = model.split('/').map(encodeURIComponent).join('/')
+  return `${config.baseURL}/v1/projects/${encodeURIComponent(config.project)}/locations/${encodeURIComponent(config.location)}/publishers/google/models/${path}:countTokens`
+}
+
+/** Verify auth, endpoint, and model reachability without generating output tokens. */
+export async function probeModel(config, auth, signal) {
+  const url = countTokensUrl(config, config.model)
+  const timeout = AbortSignal.timeout(20_000)
+  const combined = signal === undefined ? timeout : AbortSignal.any([signal, timeout])
+  let response
+  try {
+    const proxy = await proxyFor(config, url, process.env)
+    response = await fetchRequest(url, {
+      method: 'POST',
+      signal: combined,
+      redirect: 'error',
+      headers: {
+        ...attributionHeaders(),
+        'content-type': 'application/json',
+        accept: 'application/json',
+        ...auth.headers,
+      },
+      body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'ping' }] }] }),
+    }, proxy)
+  } catch (error) {
+    if (timeout.aborted) throw new LlmError('llm-gemini-argon: connection test timed out', 'TIMEOUT', { cause: error })
+    if (signal?.aborted) throw new LlmError('llm-gemini-argon: connection test aborted', 'ABORTED', { cause: error })
+    throw new LlmError('llm-gemini-argon: connection test transport failed', 'TRANSPORT', { cause: error })
+  }
+  if (!response.ok) throw await httpFailure(response)
+  const body = await response.json().catch(() => undefined)
+  if (!isObject(body) || typeof body.totalTokens !== 'number') {
+    throw new LlmError('llm-gemini-argon: connection test returned an unexpected body', 'MALFORMED_RESPONSE')
+  }
+  return body.totalTokens
+}
+
 /** One route's Vertex AI streaming adapter. */
 export class GeminiArgonAdapter extends LlmAdapter {
   constructor({ options, resolveAuth, resolveAttachments, imageAccess }) {
@@ -1190,6 +1228,8 @@ export function apply(ctx, config) {
     return { kind: 'api-key', headers: { 'x-goog-api-key': await resolveApiKey(current) } }
   }
 
+  const settingsNs = ctx.fiber.entry?.options.id ?? name
+
   const adapter = new GeminiArgonAdapter({
     options,
     resolveAuth,
@@ -1207,10 +1247,27 @@ export function apply(ctx, config) {
   ctx.llm.registerConfigurableProviders([{
     provider: PROVIDER,
     displayName: 'Google Vertex AI',
-    settingsNs: ctx.fiber.entry?.options.id ?? name,
+    settingsNs,
     settingsPath: [],
   }])
   const registration = ctx.llm.registerAdapter([PROVIDER], adapter)
+
+  ctx.llm.registerModelDiscovery(settingsNs, async (_request, signal) => {
+    const current = options()
+    let auth = await resolveAuth()
+    try {
+      await probeModel(current, auth, signal)
+    } catch (error) {
+      if (error instanceof LlmError && error.code === 'AUTH' && auth.invalidate !== undefined) {
+        auth.invalidate()
+        auth = await resolveAuth(true)
+        await probeModel(current, auth, signal)
+      } else {
+        throw error
+      }
+    }
+    return [{ id: current.model, name: current.modelName }]
+  })
 
   ctx.on('loader/volatile-update', () => {
     try {

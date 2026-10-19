@@ -40,7 +40,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.6.6
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.7.0
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
@@ -56,10 +56,15 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
 - `model` / `modelName`、`thinkingLevel`、`proxy`
 - 高级项：`location`、`baseURL`、`contextWindow`、`maxTokens`、`streamIdleTimeoutMs`、`imageMaxPixels`、`imageMaxBytes`
 - API Key 输入框（写入 `GOOGLE_VERTEX_API_KEY`，也可清除）
+- **测试连接**：用 `countTokens` 做一次真实探测（不产生输出 token），验证认证、端点和模型是否可达
 
 保存后写入 profile 的 `cordis.patch.yml`，下一次模型请求生效，无需重启。内联的 `serviceAccountJson` 刻意没有放进 UI（避免私钥明文进配置），需要时仍可通过文件或 `GOOGLE_APPLICATION_CREDENTIALS`。
 
 **Service Account JSON 路径**一栏旁边有 **浏览…** 按钮：桌面端会调起系统文件选择器（只接受 `.json`），选中后填入文件的绝对路径；内容不会被读取或上传，只存路径。CLI / 远程连接等没有桌面文件桥的环境仍可手动输入，支持 `~`。
+
+**测试连接** 只会请求 `:countTokens`，不生成内容、不消耗输出 token。它会使用**已保存**的配置，有未保存修改时会提示先保存。
+
+> 行首的绿色/红色圆点是 DSH 的 **API Key 状态点**，它不检查 Service Account。使用 JSON 密钥时插件会隐藏这个误导性的红点，认证状态以卡片里的“认证：Service Account JSON”为准。
 
 **清除 Service Account 配置** 会清空 `serviceAccountFile` / `serviceAccountJson`，并在 `auth: service-account` 时切回 `api-key`；**不会删除本机的 JSON 文件**。该按钮只在检测到已保存的 JSON 配置时出现，同样需要二次确认。
 
@@ -181,7 +186,7 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
 | `auth` | `auto` | 认证方式：`auto` / `api-key` / `service-account`。`auto` 在检测到 service account 时优先使用 JSON 密钥。 |
-| `apiKeyEnv` | `GOOGLE_VERTEX_API_KEY` | API Key 的凭据引用。仅在 API Key 模式下使用；优先从 credentials 服务解析，未命中时回退到启动环境变量。 |
+| `apiKeyEnv` | `GOOGLE_VERTEX_API_KEY` | API Key 的凭据引用。未显式写入时由插件兜底为 `GOOGLE_VERTEX_API_KEY`；在设置页保存 Key 时会自动写入，行首状态点也依赖它。 |
 | `serviceAccountFile` | 空 | service account JSON 文件路径，支持 `~`。未设置时回退到 `GOOGLE_APPLICATION_CREDENTIALS`。 |
 | `serviceAccountJson` | 空 | 内联 service account JSON。会以明文形式保存在 profile 配置中，仅建议在临时环境使用。 |
 | `project` | 空（必填） | Google Cloud 项目编号或 ID。优先级：`project` > service account 的 `project_id` > `GOOGLE_CLOUD_PROJECT`。 |
@@ -251,6 +256,10 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 ### 400 `Function call is missing a thought_signature`
 
 说明有一个 Gemini 生成的工具调用丢了签名（例如手动裁剪了 `replayState`、会话被外部编辑）。其他 Provider 产生的工具调用不会触发该错误：插件会自动降级为文本。若确认是 Gemini 自己的历史被破坏，只能新建会话或让该工具调用重新执行一次。
+
+### 行首圆点是红色，或没有圆点
+
+那是 DSH 的 API Key 状态指示，不反映 Service Account。使用 JSON 密钥时插件会隐藏这个红点；认证状态看卡片里的“认证：…”，想确认真实可用性就点 **测试连接**。
 
 ### `MISSING_CREDENTIAL`
 未能解析到有效的 API Key。请前往 **Settings → Models** 重新填写，或在启动环境中导出 `GOOGLE_VERTEX_API_KEY`；如果使用 service account，确认 `serviceAccountFile` 路径可读。

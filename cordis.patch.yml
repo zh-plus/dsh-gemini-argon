@@ -20,12 +20,10 @@
       name: "dsh-gemini-argon"
       config:
         auth: auto
-        apiKeyEnv: GOOGLE_VERTEX_API_KEY
         location: global
         model: gemini-4-argon
         modelName: Gemini 4 Argon
         contextWindow: 1048576
         maxTokens: 65536
-        # Thinking is opt-in: tool-history replay with a thinking level enabled
-        # can stall on Vertex, so the default stays "off".
+        # off pins the model's minimum thinking level (LOW) and hides thoughts.
         thinkingLevel: "off"

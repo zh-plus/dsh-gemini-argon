@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
     const NS = 'llm-gemini-argon'
     const DEFAULT_KEY_REF = 'GOOGLE_VERTEX_API_KEY'
 
-    const inject = ['slots', 'configForms', 'remote', 'remote.credentials']
+    const inject = ['slots', 'configForms', 'remote', 'remote.credentials', 'remote.llm']
 
     const S = {
       editor: {
@@ -242,6 +242,7 @@ window.__ModuleLoader__.load({
         const [keyDraft, setKeyDraft] = React.useState('')
         const [showKey, setShowKey] = React.useState(false)
         const [busy, setBusy] = React.useState(false)
+        const [testing, setTesting] = React.useState(false)
         const [message, setMessage] = React.useState(undefined)
         const [messageBad, setMessageBad] = React.useState(false)
         const [confirmClear, setConfirmClear] = React.useState(false)
@@ -311,6 +312,11 @@ window.__ModuleLoader__.load({
               if (after === before) continue
               ops.push(after === undefined ? { op: 'unset', path: [field.key] } : { op: 'set', path: [field.key], value: after })
             }
+            const key = keyDraft.trim()
+            if (key.length > 0 && String(draft.apiKeyEnv ?? '').trim() === '') {
+              // Give the row its credential dot once a key exists.
+              ops.push({ op: 'set', path: ['apiKeyEnv'], value: keyRef })
+            }
             if (ops.length > 0) {
               const accepted = await form.mutate(ops, snap.revision)
               if (!accepted) {
@@ -319,7 +325,6 @@ window.__ModuleLoader__.load({
                 return
               }
             }
-            const key = keyDraft.trim()
             if (key.length > 0) {
               const stored = await ctx.remote.credentials.set(keyRef, key)
               if (!stored.ok) {
@@ -412,8 +417,33 @@ window.__ModuleLoader__.load({
           }
         }
 
+        const testConnection = async () => {
+          if (dirty || keyDraft.trim().length > 0) {
+            setMessageBad(true)
+            setMessage('请先保存修改，再测试连接')
+            return
+          }
+          setTesting(true)
+          setMessage(undefined)
+          try {
+            const result = await ctx.remote.llm.discoverModels(NS, { provider: 'gemini-argon' })
+            if (result.ok === true) {
+              setMessageBad(false)
+              setMessage('连接成功：认证、端点和模型均可达（countTokens 探测）')
+            } else {
+              setMessageBad(true)
+              setMessage(`连接失败：${result.error?.message ?? 'unknown error'}`)
+            }
+          } catch (error) {
+            setMessageBad(true)
+            setMessage(`连接失败：${error instanceof Error ? error.message : String(error)}`)
+          } finally {
+            setTesting(false)
+          }
+        }
+
         const statusDot = serviceAccountConfigured
-          ? h('span', { style: S.hint }, '认证：Service Account JSON')
+          ? h('span', { style: S.hint }, '认证：Service Account JSON（不使用 API Key）')
           : props.keyConfigured === true
             ? h('span', { style: S.hintOk }, `认证：API Key 已配置（${keyRef}）`)
             : h('span', { style: S.hint }, `API Key 未配置（${keyRef}）`)
@@ -431,7 +461,7 @@ window.__ModuleLoader__.load({
         )
 
         if (open && !ready) {
-          return h('div', { style: S.editor, 'data-gemini-argon-config': '' },
+          return h('div', { style: S.editor, 'data-gemini-argon-config': '', 'data-auth': serviceAccountConfigured ? 'service-account' : 'api-key' },
             head,
             h('div', { style: S.actions },
               h('span', { style: S.hint }, snap.status === 'loading' ? '正在读取配置…' : '配置暂不可用'),
@@ -440,7 +470,7 @@ window.__ModuleLoader__.load({
           )
         }
 
-        return h('div', { style: S.editor, 'data-gemini-argon-config': '' },
+        return h('div', { style: S.editor, 'data-gemini-argon-config': '', 'data-auth': serviceAccountConfigured ? 'service-account' : 'api-key' },
           head,
           open ? h(React.Fragment, null,
             h('span', { style: S.hintWarn }, '右上角“编辑”打开的是 DSH 通用编辑器，第三方 provider 不会渲染字段；请使用本卡片。'),
@@ -491,6 +521,12 @@ window.__ModuleLoader__.load({
                 onClick: discard,
               }, '放弃修改'),
               h('button', { type: 'button', style: { ...S.secondary, ...(busy ? S.disabled : {}) }, disabled: busy, onClick: reload }, '重新读取'),
+              h('button', {
+                type: 'button',
+                style: { ...S.secondary, ...(busy || testing ? S.disabled : {}) },
+                disabled: busy || testing,
+                onClick: testConnection,
+              }, testing ? '测试中…' : '测试连接'),
               h('div', { style: S.spacer }),
               storedServiceAccount
                 ? confirmClearSa
@@ -545,6 +581,21 @@ window.__ModuleLoader__.load({
           ) : null,
         )
       }
+
+      // DSH's row dot only reflects the API-key credential. Under service-account
+      // auth a missing key is expected, so suppress that one misleading red dot
+      // for this provider row; the card itself states the active auth mode.
+      ctx.effect(() => {
+        if (typeof document === 'undefined') return undefined
+        const style = document.createElement('style')
+        style.textContent = [
+          'li:has([data-gemini-argon-config][data-auth="service-account"]) span[class*="credentialDotMissing"],',
+          'li:has([data-gemini-argon-config][data-auth="service-account"]) span[aria-label="API key missing"],',
+          'li:has([data-gemini-argon-config][data-auth="service-account"]) span[aria-label="API 密钥缺失"] { display: none !important; }',
+        ].join('\n')
+        document.head.appendChild(style)
+        return () => style.remove()
+      }, 'gemini-argon: api-key dot policy')
 
       ctx.effect(() => ctx.configForms.whileServed([NS], () => ctx.slots.inject('settings.models.provider-card', () => ctx.slots.register({
         name: 'settings.models.provider-card',
