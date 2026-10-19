@@ -6,7 +6,7 @@
 [![license](https://img.shields.io/npm/l/dsh-gemini-argon.svg)](./LICENSE)
 [![DSH](https://img.shields.io/badge/DSH-0.2.1--rc.2-4D6BFE)](https://github.com/deepseek-ai/deepseek-harness)
 
-`dsh-gemini-argon` 是专为 DeepSeek Harness 打造的 LLM provider 插件。它注册了独立的 `gemini-argon` 路由，通过 Vertex AI 原生的 `streamGenerateContent` 接口接入 `gemini-4-argon` 模型，完整支持流式输出、多轮工具调用、思考摘要与 Token 用量统计。
+`dsh-gemini-argon` 是专为 DeepSeek Harness 打造的 LLM provider 插件。它注册了独立的 `gemini-argon` 路由，通过 Vertex AI 原生的 `streamGenerateContent` 接口接入 `gemini-4-argon` 模型，完整支持流式输出、多轮工具调用、思考摘要与 Token 用量统计；认证既支持 **Express API Key**，也支持 **service account JSON 密钥**。
 
 ## 为什么需要独立插件？
 
@@ -23,7 +23,8 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 - **原生多轮工具调用**：基于原生 function calling，在多轮对话中自动保存并回放 `thoughtSignature`。
 - **精细化用量统计**：完整统计输入、输出、思考 token 以及缓存命中情况。
 - **智能代理探测**：支持从环境变量、macOS 系统代理（`scutil`）自动探测代理，或通过配置显式指定。
-- **灵活的凭据管理**：默认接入 DSH 的 credentials 服务，同时支持通过启动环境变量注入。
+- **API Key 凭据**：默认接入 DSH 的 credentials 服务，同时支持通过启动环境变量注入。
+- **Service Account 支持**：读取 service account JSON（文件、内联或 `GOOGLE_APPLICATION_CREDENTIALS`），自动完成 OAuth2 JWT 交换、access token 缓存与刷新。
 - **结构化错误分类**：精准识别并分类认证失败、配额耗尽、触发限流、上下文超限及非法请求等错误。
 
 ## 快速开始
@@ -35,7 +36,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.2.0
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.3.0
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
@@ -45,7 +46,13 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
 
 ### 2. 配置 Google Cloud Project
 
-由于 Express API Key 本身不包含项目信息，必须显式指定 `project`。请编辑 `~/.dsh/profiles/desktop/cordis.patch.yml` 并添加以下配置：
+`project` 必须能解析到，插件支持以下任一来源（优先级从高到低）：
+
+1. profile 补丁里的 `project`；
+2. service account JSON 里的 `project_id`（使用 JSON 密钥时自动读取）；
+3. 环境变量 `GOOGLE_CLOUD_PROJECT`。
+
+都没有时，插件会在加载阶段直接报错，避免把请求发到错误区域。使用 API Key 时在 `~/.dsh/profiles/desktop/cordis.patch.yml` 里补：
 
 ```yaml
 - id: llm-gemini-argon
@@ -54,9 +61,11 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
     project: "your-google-cloud-project"
 ```
 
-你也可以选择在环境中导出 `GOOGLE_CLOUD_PROJECT` 变量。若未配置 `project`，插件会在加载阶段直接报错拦截，避免将请求发送到错误的区域。
+### 3. 配置认证
 
-### 3. 配置 API Key
+插件支持两种认证方式，按需选一种即可。`auth: auto`（默认）在检测到 service account 时优先使用 JSON 密钥，否则使用 API Key；也可以用 `auth: api-key` / `auth: service-account` 强制指定。
+
+#### 方式 A：Express API Key
 
 打开 **Settings → Models**，在 `GOOGLE_VERTEX_API_KEY` 项中填入你的 Vertex AI Express API Key。DSH 会将其安全保存至 `$DSH_HOME/.credentials.yaml`。
 
@@ -65,6 +74,26 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
 ```sh
 GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 ```
+
+#### 方式 B：Service Account JSON
+
+把你的 service account 密钥 JSON 放在本机（**不要提交进 Git**），然后在 profile 补丁里指定文件路径：
+
+```yaml
+- id: llm-gemini-argon
+  name: "dsh-gemini-argon"
+  config:
+    auth: service-account
+    serviceAccountFile: "~/.config/gcloud/argon-sa.json"
+```
+
+也支持：
+
+- 内联 JSON：`serviceAccountJson: '{"type":"service_account",...}'`（会以明文保存在 profile 配置里，不推荐）；
+- 标准环境变量：`GOOGLE_APPLICATION_CREDENTIALS=/path/to/key.json`（`auth: auto` 会自动启用）；
+- 项目号：默认取 JSON 的 `project_id`，也可用 `project` 覆盖。
+
+插件会用私钥签一个 RS256 JWT，向 `token_uri` 换取 OAuth2 access token，再以 `Authorization: Bearer` 调用 Vertex；token 会缓存到过期前 5 分钟并自动刷新，收到 401 时会刷新一次并重试。service account 需要具备 Vertex AI 调用权限（例如 `Vertex AI User`），并且项目已启用 Vertex AI API。
 
 ### 4. 选择模型
 
@@ -79,6 +108,7 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
     - id: llm-gemini-argon
       name: "dsh-gemini-argon"
       config:
+        auth: auto
         apiKeyEnv: GOOGLE_VERTEX_API_KEY
         location: global
         model: gemini-4-argon
@@ -92,8 +122,11 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 
 | 字段 | 默认值 | 说明 |
 | --- | --- | --- |
-| `apiKeyEnv` | `GOOGLE_VERTEX_API_KEY` | 凭据环境变量名。优先从 credentials 服务解析，未命中时回退到启动环境变量。 |
-| `project` | 空（**必填**） | Google Cloud 项目编号或 ID；也可通过环境变量 `GOOGLE_CLOUD_PROJECT` 指定。 |
+| `auth` | `auto` | 认证方式：`auto` / `api-key` / `service-account`。`auto` 在检测到 service account 时优先使用 JSON 密钥。 |
+| `apiKeyEnv` | `GOOGLE_VERTEX_API_KEY` | API Key 的凭据引用。仅在 API Key 模式下使用；优先从 credentials 服务解析，未命中时回退到启动环境变量。 |
+| `serviceAccountFile` | 空 | service account JSON 文件路径，支持 `~`。未设置时回退到 `GOOGLE_APPLICATION_CREDENTIALS`。 |
+| `serviceAccountJson` | 空 | 内联 service account JSON。会以明文形式保存在 profile 配置中，仅建议在临时环境使用。 |
+| `project` | 空（必填） | Google Cloud 项目编号或 ID。优先级：`project` > service account 的 `project_id` > `GOOGLE_CLOUD_PROJECT`。 |
 | `location` | `global` | 模型所在区域。`gemini-4-argon` 仅在 `global` 提供，设为其他区域会导致 `404`。 |
 | `baseURL` | `https://aiplatform.googleapis.com` | API 基础地址，可根据测试需求或私有网关进行修改。 |
 | `model` | `gemini-4-argon` | Vertex 发布模型 ID。 |
@@ -124,14 +157,14 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 {baseURL}/v1/projects/{project}/locations/{location}/publishers/google/models/{model}:streamGenerateContent?alt=sse
 ```
 
-- **认证方式**：通过请求头 `x-goog-api-key` 传递凭据，专为 Vertex Express Key 设计。
+- **认证方式**：API Key 模式通过 `x-goog-api-key` 请求头认证；service account 模式先用 RS256 JWT 向 `token_uri` 换取 OAuth2 access token，再以 `Authorization: Bearer` 调用 Vertex。
 - **流式解析**：按 SSE 协议解析响应流，将每个数据块实时转换为 DSH 标准事件（`text-delta` / `reasoning-delta` / `tool-call-delta` / `usage` / `finish`）。
 - **状态与签名回放**：每次收到响应后，插件会将原生 parts 及每个 block 的 `thoughtSignature` 存入 DSH 的 `replayState`；在下一轮对话中将签名原样回放，从而避免工具调用触发 `400` 错误。
 - **网络与代理**：请求底层基于 `undici` 的 `ProxyAgent` 发出。代理探测优先级为：`proxy` 显式配置 > `HTTPS_PROXY` / `ALL_PROXY` 等环境变量 > macOS `scutil --proxy` > 直连。
 
 ## 已知限制
 
-- **认证方式**：仅支持 Express / API Key 认证，暂不支持 `gcloud` ADC（应用默认凭据）或服务账号 JSON 密钥。
+- **认证方式**：支持 Express API Key 和 service account JSON；不支持 metadata server / Workload Identity Federation 自动发现。
 - **输入模态**：当前输入模态声明为纯文本，图片输入会被 DSH 转换为文本占位符。
 - **思考模式稳定性**：开启思考模式（`thinkingLevel` 非 `off`）时，包含工具调用历史的长会话偶发响应卡顿，因此默认设为关闭。
 - **跨模型切换**：从其他 Provider 切换到本模型时，由于历史工具调用记录缺少 Gemini 专属签名，请求可能会被接口拒绝。建议在长工具会话中固定使用 Gemini 4 Argon。
@@ -142,7 +175,7 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 通常是区域配置有误。Express Key 的简写路径会默认路由到特定区域，而 `gemini-4-argon` 仅部署在 `global`。请确认已正确配置 `project`，且 `location` 保持为 `global`。
 
 ### 401 `API keys are not supported by this API`
-说明请求误走了 OpenAI 兼容层或使用了 `Authorization: Bearer` 认证头。本插件采用原生 `generateContent` 接口配合 `x-goog-api-key` 认证，无需更换 Key，请检查路由是否已正确切换至 `gemini-argon`。
+说明当前用 API Key 发了请求，但该端点只接受 OAuth2 凭据。检查 `auth` 是否被固定为 `api-key`；如果该环境提供的是 service account JSON，改为 `auth: service-account` 或直接配置 `serviceAccountFile`。
 
 ### 请求一直挂起不返回
 绝大多数情况属于网络连通性问题。Node.js 原生 `fetch` 不会自动读取 macOS 系统代理。请确保 `proxy` 保持为 `auto`（默认）或显式指定代理地址（如 `http://127.0.0.1:7897`），修改后重启应用。
@@ -151,16 +184,25 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 会话历史中的工具调用缺少签名信息。通常发生在从其他 Provider 中途切换至本模型，或手动裁剪了 `replayState` 时。进行多轮工具调用时，建议全程固定使用 Gemini 4 Argon。
 
 ### `MISSING_CREDENTIAL`
-未能解析到有效的 API Key。请前往 **Settings → Models** 重新填写，或在启动环境中导出 `GOOGLE_VERTEX_API_KEY`。
+未能解析到有效的 API Key。请前往 **Settings → Models** 重新填写，或在启动环境中导出 `GOOGLE_VERTEX_API_KEY`；如果使用 service account，确认 `serviceAccountFile` 路径可读。
+
+### 400 `invalid_grant` / `invalid JWT signature`
+service account 私钥与 `client_email` 不匹配、系统时间偏差过大，或密钥已被撤销。检查 JSON 是完整的密钥文件、校准系统时间；轮换密钥后重启应用。
 
 ### `project is required`
-缺少 Google Cloud 项目配置。请在 profile 补丁文件中补充 `project` 字段，或在环境变量中导出 `GOOGLE_CLOUD_PROJECT`。
+缺少 Google Cloud 项目配置。请在 profile 补丁文件中补充 `project` 字段、在 service account JSON 中提供 `project_id`，或导出 `GOOGLE_CLOUD_PROJECT`。
 
 ## 开发与测试
 
 ### 独立冒烟测试
 
-无需启动 DSH，直接运行 adapter 进行测试（会真实调用 Vertex 接口，覆盖文本生成、工具调用及工具结果回放）：
+离线认证测试（自动生成 RSA 密钥、启动 mock OAuth2 和 mock Vertex 服务，不需要真实凭据与网络）：
+
+```sh
+node test/service-account.test.mjs
+```
+
+真实调用测试（会访问 Vertex，覆盖文本生成、工具调用及工具结果回放）：
 
 ```sh
 GKEY=... GOOGLE_CLOUD_PROJECT=... node --preserve-symlinks test/live.test.mjs
@@ -184,8 +226,9 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile argon --json "Run: echo hi"
 
 ## 安全说明
 
-- 本仓库不包含任何硬编码的 API Key、项目编号或代理地址。
+- 本仓库不包含任何硬编码的 API Key、项目编号、代理地址或 service account 私钥。
 - API Key 仅保存在本地 `$DSH_HOME/.credentials.yaml` 中，请勿将该文件提交至 Git。
+- service account JSON 包含私钥：建议文件权限设为 `600`，绝不提交进仓库；优先使用 `serviceAccountFile` 或 `GOOGLE_APPLICATION_CREDENTIALS`，避免把私钥内联到 `serviceAccountJson`。
 - 在发布 npm 包之前，建议先执行 `npm pack --dry-run` 检查打包内容，防止敏感信息泄露。
 
 ## License

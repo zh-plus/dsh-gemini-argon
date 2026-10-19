@@ -23,7 +23,7 @@ const config = resolveOptions({
 
 const adapter = new GeminiArgonAdapter({
   options: () => config,
-  resolveApiKey: async () => apiKey,
+  resolveAuth: async () => ({ kind: 'api-key', headers: { 'x-goog-api-key': apiKey } }),
 })
 
 async function call(messages, { tools = [], system = 'You are a terse test assistant.' } = {}) {

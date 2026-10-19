@@ -11,10 +11,15 @@
 # or exports GOOGLE_CLOUD_PROJECT. Express API keys do not carry a project, so
 # the adapter spells it out to reach the `global` endpoint, which is where
 # gemini-4-argon is served.
+#
+# Authentication defaults to `auto`: a service account JSON is used when
+# `serviceAccountFile`, `serviceAccountJson`, or GOOGLE_APPLICATION_CREDENTIALS
+# is present, and the Express API key otherwise.
 - insert:
     - id: llm-gemini-argon
       name: "dsh-gemini-argon"
       config:
+        auth: auto
         apiKeyEnv: GOOGLE_VERTEX_API_KEY
         location: global
         model: gemini-4-argon

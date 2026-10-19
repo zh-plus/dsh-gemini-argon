@@ -1,7 +1,7 @@
 {
   "name": "dsh-gemini-argon",
-  "version": "0.2.0",
-  "description": "Gemini 4 Argon on Google Vertex AI for DeepSeek Harness: streaming, tool calls, thought signatures, proxy-aware.",
+  "version": "0.3.0",
+  "description": "Gemini 4 Argon on Google Vertex AI for DeepSeek Harness: streaming, tool calls, thought signatures, API key or service-account auth.",
   "license": "MIT",
   "type": "module",
   "main": "index.js",
@@ -20,7 +20,10 @@
     "deepseek-harness",
     "vertex-ai",
     "gemini",
-    "gemini-4-argon"
+    "gemini-4-argon",
+    "google-vertex",
+    "service-account",
+    "oauth2"
   ],
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

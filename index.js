@@ -19,6 +19,10 @@
  */
 
 import { execFile } from 'node:child_process'
+import { createHash, createSign } from 'node:crypto'
+import { readFileSync, statSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { promisify } from 'node:util'
 import {
   EMPTY_RESPONSE_CODE,
@@ -47,12 +51,29 @@ const DEFAULT_API_KEY_ENV = 'GOOGLE_VERTEX_API_KEY'
 const DEFAULT_CONTEXT_WINDOW = 1048576
 const DEFAULT_MAX_TOKENS = 65536
 const THINKING_LEVELS = ['off', 'low', 'medium', 'high']
+const AUTH_MODES = ['auto', 'api-key', 'service-account']
+const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token'
+const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
+/** Access tokens are refreshed this long before their reported expiry. */
+const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000
 /** Error bodies are diagnostics, not payloads; keep logs and messages bounded. */
 const MAX_ERROR_BODY = 4000
 
 export const Config = z.object({
   /** Credential reference resolved through the credentials service (or the launch environment). */
   apiKeyEnv: z.string().default(DEFAULT_API_KEY_ENV).role('credential-ref').volatile(),
+  /**
+   * `auto` uses a service account when one is configured and the API key
+   * otherwise; `api-key` and `service-account` force one method.
+   */
+  auth: z.union(AUTH_MODES).default('auto').volatile(),
+  /** Path to a Google service account JSON key file. `~` is expanded. */
+  serviceAccountFile: z.string().default('').volatile(),
+  /**
+   * Inline service account JSON. Stored in plain text wherever plugin config
+   * lives, so prefer `serviceAccountFile` or `GOOGLE_APPLICATION_CREDENTIALS`.
+   */
+  serviceAccountJson: z.string().default('').volatile(),
   /** Google Cloud project number or id. Required for Express keys to reach non-regional models. */
   project: z.string().default('').volatile(),
   /** Vertex location. `global` is the endpoint family that serves gemini-4-argon. */
@@ -90,6 +111,239 @@ function positiveInteger(value, label) {
   return value
 }
 
+function expandHome(path) {
+  if (path === '~') return homedir()
+  if (path.startsWith('~/')) return join(homedir(), path.slice(2))
+  return path
+}
+
+/**
+ * Validate a service account document, whether parsed from a file or inline.
+ * Only the fields needed for the JWT bearer flow are read; the private key
+ * never leaves this object and never appears in an error message.
+ * @param {string|object} input - JSON text or an already-parsed document.
+ * @param {string} source - where the document came from, for diagnostics.
+ * @returns {object} detached service account facts.
+ */
+export function parseServiceAccount(input, source) {
+  let value = input
+  if (typeof input === 'string') {
+    try {
+      value = JSON.parse(input)
+    } catch {
+      throw new Error(`llm-gemini-argon: ${source} is not valid JSON`)
+    }
+  }
+  if (!isObject(value)) throw new Error(`llm-gemini-argon: ${source} must be a JSON object`)
+  if (value.type !== undefined && value.type !== 'service_account') {
+    throw new Error(`llm-gemini-argon: ${source} has type ${JSON.stringify(value.type)}, not "service_account"`)
+  }
+  const clientEmail = typeof value.client_email === 'string' ? value.client_email.trim() : ''
+  if (!clientEmail.includes('@')) {
+    throw new Error(`llm-gemini-argon: ${source} has no usable client_email`)
+  }
+  const privateKey = typeof value.private_key === 'string' ? value.private_key : ''
+  if (!/-----BEGIN (?:RSA )?PRIVATE KEY-----/u.test(privateKey)) {
+    throw new Error(`llm-gemini-argon: ${source} has no usable private_key`)
+  }
+  const projectId = typeof value.project_id === 'string' ? value.project_id.trim() : ''
+  const tokenUri = typeof value.token_uri === 'string' && value.token_uri.trim().length > 0
+    ? value.token_uri.trim()
+    : DEFAULT_TOKEN_URI
+  let parsedTokenUri
+  try {
+    parsedTokenUri = new URL(tokenUri)
+  } catch {
+    throw new Error(`llm-gemini-argon: ${source} has an invalid token_uri`)
+  }
+  if (!['http:', 'https:'].includes(parsedTokenUri.protocol)) {
+    throw new Error(`llm-gemini-argon: ${source} token_uri must be HTTP(S)`)
+  }
+  return {
+    clientEmail,
+    privateKey,
+    projectId,
+    tokenUri,
+    privateKeyId: typeof value.private_key_id === 'string' ? value.private_key_id : undefined,
+    source,
+  }
+}
+
+let serviceAccountFileCache
+
+/** Read and validate one key file, reusing the parsed value until the file changes. */
+function loadServiceAccountFile(path) {
+  let stat
+  try {
+    stat = statSync(path)
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`llm-gemini-argon: service account file not found: ${path}`)
+    throw error
+  }
+  const cached = serviceAccountFileCache
+  if (cached !== undefined && cached.path === path && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.value
+  }
+  let text
+  try {
+    text = readFileSync(path, 'utf8')
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new Error(`llm-gemini-argon: service account file not found: ${path}`)
+    throw error
+  }
+  const value = parseServiceAccount(text, path)
+  serviceAccountFileCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, value }
+  return value
+}
+
+/** Resolve the configured service account, if any. */
+function loadServiceAccount(raw) {
+  if (isObject(raw.serviceAccountJson)) return parseServiceAccount(raw.serviceAccountJson, 'serviceAccountJson')
+  const inline = String(raw.serviceAccountJson ?? '').trim()
+  if (inline.length > 0) return parseServiceAccount(inline, 'serviceAccountJson')
+  const file = String(raw.serviceAccountFile ?? '').trim() || String(process.env.GOOGLE_APPLICATION_CREDENTIALS ?? '').trim()
+  if (file.length === 0) return undefined
+  return loadServiceAccountFile(expandHome(file))
+}
+
+function base64url(value) {
+  return Buffer.from(value, 'utf8').toString('base64url')
+}
+
+/** Build the RS256-signed JWT assertion for the OAuth2 JWT bearer grant. */
+export function serviceAccountJwt(serviceAccount, now = Math.floor(Date.now() / 1000)) {
+  const header = {
+    alg: 'RS256',
+    typ: 'JWT',
+    ...(serviceAccount.privateKeyId === undefined ? {} : { kid: serviceAccount.privateKeyId }),
+  }
+  const claims = {
+    iss: serviceAccount.clientEmail,
+    scope: CLOUD_PLATFORM_SCOPE,
+    aud: serviceAccount.tokenUri,
+    iat: now,
+    exp: now + 3600,
+  }
+  const signingInput = `${base64url(JSON.stringify(header))}.${base64url(JSON.stringify(claims))}`
+  let signature
+  try {
+    signature = createSign('RSA-SHA256').update(signingInput).sign(serviceAccount.privateKey)
+  } catch (error) {
+    throw new LlmError('llm-gemini-argon: service account private key cannot sign a JWT', 'INVALID_CREDENTIAL', { cause: error })
+  }
+  return `${signingInput}.${signature.toString('base64url')}`
+}
+
+const tokenCache = new Map()
+
+function tokenCacheKey(serviceAccount) {
+  const digest = createHash('sha256').update(serviceAccount.privateKey).digest('hex')
+  return `${serviceAccount.clientEmail}\u0000${digest}`
+}
+
+/** Exchange the JWT assertion for an OAuth2 access token. */
+async function requestServiceAccountToken(serviceAccount, config) {
+  const assertion = serviceAccountJwt(serviceAccount)
+  const body = new URLSearchParams({
+    grant_type: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+    assertion,
+  }).toString()
+  let response
+  try {
+    const proxy = await proxyFor(config, serviceAccount.tokenUri, process.env)
+    response = await fetchRequest(serviceAccount.tokenUri, {
+      method: 'POST',
+      redirect: 'error',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', accept: 'application/json' },
+      body,
+    }, proxy)
+  } catch (error) {
+    throw new LlmError('llm-gemini-argon: service account token request failed', 'TRANSPORT', { cause: error })
+  }
+  const text = bounded(await response.text().catch(() => ''))
+  if (!response.ok) {
+    let detail = text
+    try {
+      const parsed = JSON.parse(text)
+      if (isObject(parsed)) {
+        if (typeof parsed.error_description === 'string') detail = parsed.error_description
+        else if (typeof parsed.error === 'string') detail = parsed.error
+      }
+    } catch {}
+    const code = response.status === 400 || response.status === 401 || response.status === 403
+      ? 'INVALID_CREDENTIAL'
+      : response.status === 429
+        ? 'RATE_LIMIT'
+        : response.status >= 500
+          ? 'SERVER'
+          : `HTTP_${response.status}`
+    throw new LlmError(
+      `llm-gemini-argon: service account token request failed (${response.status}): ${bounded(detail)}`,
+      code,
+      { status: response.status, cause: new Error(text) },
+    )
+  }
+  let parsed
+  try {
+    parsed = JSON.parse(text)
+  } catch {
+    throw new LlmError('llm-gemini-argon: service account token endpoint returned invalid JSON', 'MALFORMED_RESPONSE')
+  }
+  if (!isObject(parsed) || typeof parsed.access_token !== 'string' || parsed.access_token.length === 0) {
+    throw new LlmError('llm-gemini-argon: service account token endpoint returned no access_token', 'MALFORMED_RESPONSE')
+  }
+  const expiresIn = typeof parsed.expires_in === 'number' && Number.isFinite(parsed.expires_in) && parsed.expires_in > 0
+    ? parsed.expires_in
+    : 3600
+  return { accessToken: parsed.access_token, expiresAt: Date.now() + expiresIn * 1000 }
+}
+
+/** Cached access token for one service account, refreshed shortly before expiry. */
+async function accessTokenFor(serviceAccount, config, force = false) {
+  const key = tokenCacheKey(serviceAccount)
+  const now = Date.now()
+  if (!force) {
+    const hit = tokenCache.get(key)
+    if (hit !== undefined) {
+      if (hit.pending !== undefined) return hit.pending
+      if (hit.accessToken !== undefined && hit.expiresAt - TOKEN_REFRESH_MARGIN_MS > now) return hit.accessToken
+    }
+  }
+  const pending = requestServiceAccountToken(serviceAccount, config).then(({ accessToken, expiresAt }) => {
+    tokenCache.set(key, { accessToken, expiresAt })
+    return accessToken
+  }, (error) => {
+    tokenCache.delete(key)
+    throw error
+  })
+  tokenCache.set(key, { pending })
+  return pending
+}
+
+/** Drop the cached token for one service account, e.g. after a 401. */
+export function invalidateServiceAccountToken(serviceAccount) {
+  tokenCache.delete(tokenCacheKey(serviceAccount))
+}
+
+/**
+ * Resolve the request headers for the configured authentication mode.
+ * @param {object} config - validated settings.
+ * @param {boolean} force - refresh a cached service account token first.
+ * @returns {Promise<object>} `{ kind, headers, invalidate? }`.
+ */
+export async function serviceAccountAuth(config, force = false) {
+  const serviceAccount = config.serviceAccount
+  if (serviceAccount === undefined) {
+    throw new LlmError('llm-gemini-argon: service-account auth has no service account configured', 'INVALID_CREDENTIAL')
+  }
+  const token = await accessTokenFor(serviceAccount, config, force)
+  return {
+    kind: 'service-account',
+    headers: { authorization: `Bearer ${token}` },
+    invalidate: () => invalidateServiceAccountToken(serviceAccount),
+  }
+}
+
 /**
  * Validate raw plugin config into detached request settings.
  * @param {object} raw - plain config values.
@@ -107,9 +361,25 @@ export function resolveOptions(raw) {
     throw new Error('llm-gemini-argon: baseURL must be an HTTP(S) root without credentials, query, or fragment')
   }
 
-  const project = String(raw.project ?? '').trim() || String(process.env.GOOGLE_CLOUD_PROJECT ?? '').trim()
+  const authMode = String(raw.auth ?? 'auto').trim() || 'auto'
+  if (!AUTH_MODES.includes(authMode)) {
+    throw new Error(`llm-gemini-argon: auth must be one of ${AUTH_MODES.join(', ')}`)
+  }
+  const serviceAccount = loadServiceAccount(raw)
+  const useServiceAccount = authMode === 'service-account' || (authMode === 'auto' && serviceAccount !== undefined)
+  if (authMode === 'service-account' && serviceAccount === undefined) {
+    throw new Error('llm-gemini-argon: auth "service-account" requires serviceAccountFile, serviceAccountJson, or GOOGLE_APPLICATION_CREDENTIALS')
+  }
+
+  const project = String(raw.project ?? '').trim()
+    || (useServiceAccount ? String(serviceAccount?.projectId ?? '').trim() : '')
+    || String(process.env.GOOGLE_CLOUD_PROJECT ?? '').trim()
   if (project.length === 0) {
-    throw new Error('llm-gemini-argon: project is required; set config.project or export GOOGLE_CLOUD_PROJECT (Express API keys do not carry a project)')
+    throw new Error(
+      useServiceAccount
+        ? 'llm-gemini-argon: project is required; set config.project, add project_id to the service account JSON, or export GOOGLE_CLOUD_PROJECT'
+        : 'llm-gemini-argon: project is required; set config.project or export GOOGLE_CLOUD_PROJECT (Express API keys do not carry a project)',
+    )
   }
   if (!/^[A-Za-z0-9][A-Za-z0-9:._-]*$/u.test(project)) {
     throw new Error(`llm-gemini-argon: project ${JSON.stringify(project)} is not a project id or number`)
@@ -146,6 +416,8 @@ export function resolveOptions(raw) {
 
   return {
     apiKeyEnv: credentialRef(apiKeyEnv),
+    auth: useServiceAccount ? 'service-account' : 'api-key',
+    serviceAccount: useServiceAccount ? serviceAccount : undefined,
     baseURL,
     project,
     location,
@@ -498,10 +770,10 @@ function statusTextOf(response) {
 
 /** One route's Vertex AI streaming adapter. */
 export class GeminiArgonAdapter extends LlmAdapter {
-  constructor({ options, resolveApiKey }) {
+  constructor({ options, resolveAuth }) {
     super()
     this.options = options
-    this.resolveApiKey = resolveApiKey
+    this.resolveAuth = resolveAuth
   }
 
   providerInfo(provider) {
@@ -514,7 +786,7 @@ export class GeminiArgonAdapter extends LlmAdapter {
       provider,
       id: config.model,
       name: config.modelName,
-      description: 'Gemini 4 Argon on Google Vertex AI (Express API key)',
+      description: 'Gemini 4 Argon on Google Vertex AI',
       inputModalities: ['text'],
     }]
   }
@@ -549,14 +821,12 @@ export class GeminiArgonAdapter extends LlmAdapter {
    */
   async *stream(options) {
     const config = this.options()
-    const apiKey = await this.resolveApiKey()
     const body = buildRequestBody(options, config)
     const url = endpointOf(config, options.model)
 
-    let response
-    try {
+    const send = async (auth) => {
       const proxy = await proxyFor(config, url, process.env)
-      response = await fetchRequest(url, {
+      return fetchRequest(url, {
         method: 'POST',
         signal: options.signal,
         redirect: 'error',
@@ -564,11 +834,27 @@ export class GeminiArgonAdapter extends LlmAdapter {
           ...attributionHeaders(),
           'content-type': 'application/json',
           accept: 'text/event-stream',
-          'x-goog-api-key': apiKey,
+          ...auth.headers,
         },
         body: JSON.stringify(body),
       }, proxy)
+    }
+
+    let auth
+    let response
+    try {
+      auth = await this.resolveAuth()
+      response = await send(auth)
+      // A cached service account token can expire early (clock skew, revocation);
+      // refresh once and retry before surfacing the 401.
+      if (response.status === 401 && auth.invalidate !== undefined) {
+        await response.body?.cancel().catch(() => {})
+        auth.invalidate()
+        auth = await this.resolveAuth(true)
+        response = await send(auth)
+      }
     } catch (error) {
+      if (error instanceof LlmError) throw error
       if (options.signal?.aborted) throw new LlmError('llm-gemini-argon: request aborted', 'ABORTED', { cause: error })
       throw new LlmError('llm-gemini-argon: Vertex AI transport failed', 'TRANSPORT', { cause: error })
     }
@@ -720,8 +1006,8 @@ export function apply(ctx, config) {
     child.effect(() => child.settings.configure({ auto: false }, ctx.fiber))
   })
 
-  const resolveApiKey = async () => {
-    const ref = options().apiKeyEnv
+  const resolveApiKey = async (current) => {
+    const ref = current.apiKeyEnv
     const credentials = ctx.get('credentials')
     if (credentials !== undefined) {
       const hit = await credentials.resolve(ref)
@@ -735,7 +1021,13 @@ export function apply(ctx, config) {
     )
   }
 
-  const adapter = new GeminiArgonAdapter({ options, resolveApiKey })
+  const resolveAuth = async (force = false) => {
+    const current = options()
+    if (current.auth === 'service-account') return serviceAccountAuth(current, force)
+    return { kind: 'api-key', headers: { 'x-goog-api-key': await resolveApiKey(current) } }
+  }
+
+  const adapter = new GeminiArgonAdapter({ options, resolveAuth })
   ctx.llm.registerConfigurableProviders([{
     provider: PROVIDER,
     displayName: 'Google Vertex AI',
