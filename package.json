@@ -1,6 +1,6 @@
 {
   "name": "dsh-gemini-argon",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Gemini 4 Argon on Google Vertex AI for DeepSeek Harness: images, tool calls, thinking replay, API key or service-account auth.",
   "license": "MIT",
   "type": "module",

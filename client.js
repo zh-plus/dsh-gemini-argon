@@ -79,7 +79,7 @@ window.__ModuleLoader__.load({
       { key: 'project', label: 'Google Cloud 项目', kind: 'text', placeholder: 'my-project 或 123456789012', hint: 'Project ID 或 Project Number 均可；在 Cloud Console 的项目信息卡里查看，使用 service account JSON 时可留空' },
       { key: 'auth', label: '认证方式', kind: 'select', options: [['auto', 'auto（有 JSON 用 JSON）'], ['api-key', 'API Key'], ['service-account', 'Service Account JSON']] },
       { key: 'apiKeyEnv', label: 'API Key 凭据名', kind: 'text', placeholder: DEFAULT_KEY_REF },
-      { key: 'serviceAccountFile', label: 'Service Account JSON 路径', kind: 'text', placeholder: '~/.config/gcloud/argon-sa.json', hint: '留空时读取 GOOGLE_APPLICATION_CREDENTIALS；JSON 里的 project_id 会自动作为 project' },
+      { key: 'serviceAccountFile', label: 'Service Account JSON 路径', kind: 'text', browse: true, placeholder: '~/.config/gcloud/argon-sa.json', hint: '留空时读取 GOOGLE_APPLICATION_CREDENTIALS；JSON 里的 project_id 会自动作为 project' },
       { key: 'model', label: '模型 ID', kind: 'text', placeholder: 'gemini-4-argon' },
       { key: 'modelName', label: '显示名', kind: 'text', placeholder: 'Gemini 4 Argon' },
       { key: 'thinkingLevel', label: '思考档位', kind: 'select', options: [['off', 'off（最低档 LOW）'], ['low', 'low（返回思考摘要）'], ['medium', 'medium'], ['high', 'high']] },
@@ -105,7 +105,7 @@ window.__ModuleLoader__.load({
         )
       }
 
-      function fieldNode(field, draft, setDraft) {
+      function fieldNode(field, draft, setDraft, onBrowse) {
         const raw = draft[field.key]
         const value = raw === undefined || raw === null ? '' : String(raw)
         const onChange = (event) => {
@@ -113,18 +113,25 @@ window.__ModuleLoader__.load({
           setDraft((current) => ({ ...current, [field.key]: next }))
         }
         const options = field.kind === 'select' ? field.options : undefined
+        const control = options === undefined
+          ? h('input', {
+              type: field.kind === 'number' ? 'number' : 'text',
+              value,
+              placeholder: field.placeholder,
+              onChange,
+              style: S.input,
+            })
+          : h('select', { value: value === '' ? options[0][0] : value, onChange, style: S.input },
+              options.map(([optionValue, label]) => h('option', { key: optionValue, value: optionValue }, label)))
+        const withBrowse = field.browse === true && onBrowse !== undefined
+          ? h('div', { style: { display: 'flex', gap: '6px', alignItems: 'center' } },
+              h('div', { style: { flex: '1 1 0', minWidth: 0 } }, control),
+              h('button', { type: 'button', style: S.secondary, onClick: onBrowse }, '浏览…'),
+            )
+          : control
         return h('label', { key: field.key, style: field.wide === true ? { ...S.field, ...S.wide } : S.field },
           h('span', { style: S.label }, field.label),
-          options === undefined
-            ? h('input', {
-                type: field.kind === 'number' ? 'number' : 'text',
-                value,
-                placeholder: field.placeholder,
-                onChange,
-                style: S.input,
-              })
-            : h('select', { value: value === '' ? options[0][0] : value, onChange, style: S.input },
-                options.map(([optionValue, label]) => h('option', { key: optionValue, value: optionValue }, label))),
+          withBrowse,
           field.hint === undefined ? null : h('span', { style: S.fieldHint }, field.hint),
         )
       }
@@ -136,6 +143,7 @@ window.__ModuleLoader__.load({
         const [busy, setBusy] = React.useState(false)
         const [message, setMessage] = React.useState(undefined)
         const [messageBad, setMessageBad] = React.useState(false)
+        const fileInput = React.useRef(null)
         const form = React.useMemo(() => ctx.configForms.get(NS), [])
         const snap = useForm(form)
         const value = snap.value
@@ -147,6 +155,21 @@ window.__ModuleLoader__.load({
         const keyRef = ((draft?.apiKeyEnv ?? value?.apiKeyEnv ?? DEFAULT_KEY_REF) || DEFAULT_KEY_REF).trim() || DEFAULT_KEY_REF
         const ready = snap.status === 'ready' && draft !== null
         const writable = snap.writable === true
+
+        const chooseFile = (event) => {
+          const file = event.target.files?.[0]
+          event.target.value = ''
+          if (file === undefined) return
+          const path = window.__DSH_HOST_PATHS__?.pathFor?.(file) ?? file.path
+          if (typeof path === 'string' && path.length > 0) {
+            setDraft((current) => ({ ...current, serviceAccountFile: path }))
+            setMessageBad(false)
+            setMessage(`已选择：${path}`)
+            return
+          }
+          setMessageBad(true)
+          setMessage('当前环境无法读取文件绝对路径，请手动填写')
+        }
 
         const save = async () => {
           if (!ready) return
@@ -237,7 +260,14 @@ window.__ModuleLoader__.load({
             status,
           ),
           open ? h(React.Fragment, null,
-            h('div', { style: S.grid }, BASIC_FIELDS.map((field) => fieldNode(field, draft, setDraft))),
+            h('input', {
+              type: 'file',
+              accept: '.json,application/json',
+              ref: fileInput,
+              style: { display: 'none' },
+              onChange: chooseFile,
+            }),
+            h('div', { style: S.grid }, BASIC_FIELDS.map((field) => fieldNode(field, draft, setDraft, () => fileInput.current?.click()))),
             h('label', { style: { ...S.field, ...S.wide } },
               h('span', { style: S.label }, 'API Key（留空表示保持已保存的值）'),
               h('input', {

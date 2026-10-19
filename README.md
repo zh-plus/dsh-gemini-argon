@@ -59,6 +59,8 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
 
 保存后写入 profile 的 `cordis.patch.yml`，下一次模型请求生效，无需重启。内联的 `serviceAccountJson` 刻意没有放进 UI（避免私钥明文进配置），需要时仍可通过文件或 `GOOGLE_APPLICATION_CREDENTIALS`。
 
+**Service Account JSON 路径**一栏旁边有 **浏览…** 按钮：桌面端会调起系统文件选择器（只接受 `.json`），选中后填入文件的绝对路径；内容不会被读取或上传，只存路径。CLI / 远程连接等没有桌面文件桥的环境仍可手动输入，支持 `~`。
+
 下面的 YAML 写法适用于 CLI / headless，或想直接编辑配置文件的情况。
 
 ### 3. 配置 Google Cloud Project
