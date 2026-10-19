@@ -24,6 +24,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 - **图片输入**：用户消息和工具结果中的图片会按路由预算缩放，并以 Gemini `inlineData` 发送。
 - **跨 Provider 工具历史**：来自其他模型的工具调用没有 Gemini 签名，插件会自动降级为文本，切换模型不再触发 400。
 - **流式稳定性**：长时间收不到数据会以 `TIMEOUT` 失败并交给重试策略，不会无限挂起。
+- **可视化配置**：在 **Settings → Models** 的 provider 卡片里直接编辑项目、认证、模型、思考档位、代理和 API Key。
 - **精细化用量统计**：完整统计输入、输出、思考 token 以及缓存命中情况。
 - **智能代理探测**：支持从环境变量、macOS 系统代理（`scutil`）自动探测代理，或通过配置显式指定。
 - **API Key 凭据**：默认接入 DSH 的 credentials 服务，同时支持通过启动环境变量注入。
@@ -39,7 +40,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.5.0
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.6.0
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
@@ -47,7 +48,20 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
 
 > **注意**：安装完成后请**重启 DeepSeek Harness**（profile 的 bundle 列表仅在启动时加载）。
 
-### 2. 配置 Google Cloud Project
+### 2. 在 Settings → Models 中配置（推荐）
+
+重启后打开 **Settings → Models**，在 **Google Vertex AI** 这一行点 **编辑配置**，即可直接修改：
+
+- `project`、`auth`、`apiKeyEnv`、`serviceAccountFile`
+- `model` / `modelName`、`thinkingLevel`、`proxy`
+- 高级项：`location`、`baseURL`、`contextWindow`、`maxTokens`、`streamIdleTimeoutMs`、`imageMaxPixels`、`imageMaxBytes`
+- API Key 输入框（写入 `GOOGLE_VERTEX_API_KEY`，也可清除）
+
+保存后写入 profile 的 `cordis.patch.yml`，下一次模型请求生效，无需重启。内联的 `serviceAccountJson` 刻意没有放进 UI（避免私钥明文进配置），需要时仍可通过文件或 `GOOGLE_APPLICATION_CREDENTIALS`。
+
+下面的 YAML 写法适用于 CLI / headless，或想直接编辑配置文件的情况。
+
+### 3. 配置 Google Cloud Project
 
 `project` 必须能解析到，插件支持以下任一来源（优先级从高到低）：
 
@@ -64,7 +78,7 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
     project: "your-google-cloud-project"
 ```
 
-### 3. 配置认证
+### 4. 配置认证
 
 插件支持两种认证方式，按需选一种即可。`auth: auto`（默认）在检测到 service account 时优先使用 JSON 密钥，否则使用 API Key；也可以用 `auth: api-key` / `auth: service-account` 强制指定。
 
@@ -98,7 +112,7 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 
 插件会用私钥签一个 RS256 JWT，向 `token_uri` 换取 OAuth2 access token，再以 `Authorization: Bearer` 调用 Vertex；token 会缓存到过期前 5 分钟并自动刷新，收到 401 时会刷新一次并重试。service account 需要具备 Vertex AI 调用权限（例如 `Vertex AI User`），并且项目已启用 Vertex AI API。
 
-### 4. 选择模型
+### 5. 选择模型
 
 重启应用后，在模型选择器中选择 **Gemini 4 Argon**（Provider 显示为 `Google Vertex AI`，路由 ID 为 `gemini-argon`）。
 
