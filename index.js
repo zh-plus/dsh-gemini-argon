@@ -2,17 +2,22 @@
  * Gemini 4 Argon (Google Vertex AI) provider plugin for DeepSeek Harness.
  *
  * The plugin registers one LLM route, `gemini-argon`, and talks to Vertex AI's
- * native `streamGenerateContent` API with an Express-mode API key
- * (`x-goog-api-key`). Text, streaming tool calls, usage accounting, and
- * optional thinking summaries are supported.
+ * native `streamGenerateContent` API with either an Express API key
+ * (`x-goog-api-key`) or a service account JSON key (RS256 JWT to OAuth2).
+ * Text, images, streaming tool calls, usage accounting, and optional thinking
+ * summaries are supported.
  *
  * Design notes:
  * - Express keys are region-scoped for the shorthand publisher path, so the
  *   request uses the explicit `projects/{project}/locations/{location}` form.
- *   `location: "global"` is what makes `gemini-4-argon` reachable for the
- *   Express key this plugin was written for.
- * - Thinking is off by default: replaying tool-call history with a thinking
- *   level enabled can stall on Vertex, so it is opt-in.
+ *   `location: "global"` is what makes `gemini-4-argon` reachable.
+ * - Responses are replayed as their exact native parts, including thought parts
+ *   and `thoughtSignature`; that is what keeps tool history stable when
+ *   thinking is enabled.
+ * - Tool calls that arrived from another provider carry no Gemini signature.
+ *   They are projected as text so switching models cannot produce a 400.
+ * - An idle timer turns a stream that stops delivering data into a retryable
+ *   TIMEOUT instead of a hung session.
  * - Every request carries `attributionHeaders()`, as the LLM seam requires.
  *
  * @module dsh-gemini-argon
@@ -30,9 +35,14 @@ import {
   LlmError,
   assertUsableApiKey,
   attributionHeaders,
+  contentHasImage,
   isContextWindowExceededError,
   isQuotaExceededError,
+  offloadedImageText,
+  projectOffloadedImages,
+  resolveImageAttachmentAccess,
 } from '@deepseek-ai/dsh-llm'
+import { requestImageDimensions } from '@deepseek-ai/dsh-attachment'
 import { credentialRef } from '@deepseek-ai/dsh-credentials'
 import { launchEnvironmentOf } from '@deepseek-ai/dsh-launch-environment'
 import { isVolatile } from '@deepseek-ai/cosmokit'
@@ -50,6 +60,9 @@ const DEFAULT_LOCATION = 'global'
 const DEFAULT_API_KEY_ENV = 'GOOGLE_VERTEX_API_KEY'
 const DEFAULT_CONTEXT_WINDOW = 1048576
 const DEFAULT_MAX_TOKENS = 65536
+const DEFAULT_STREAM_IDLE_TIMEOUT_MS = 300_000
+const DEFAULT_IMAGE_MAX_PIXELS = 2048 * 2048
+const DEFAULT_IMAGE_MAX_BYTES = 2 * 1024 * 1024
 const THINKING_LEVELS = ['off', 'low', 'medium', 'high']
 const AUTH_MODES = ['auto', 'api-key', 'service-account']
 const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token'
@@ -86,6 +99,12 @@ export const Config = z.object({
   modelName: z.string().default(DEFAULT_MODEL_NAME).volatile(),
   contextWindow: z.number().step(1).min(1).default(DEFAULT_CONTEXT_WINDOW).volatile(),
   maxTokens: z.number().step(1).min(1).default(DEFAULT_MAX_TOKENS).volatile(),
+  /** Fail a request when no stream event arrives for this long. */
+  streamIdleTimeoutMs: z.number().step(1).min(1).default(DEFAULT_STREAM_IDLE_TIMEOUT_MS).volatile(),
+  /** Largest request image, in pixels, before the attachment layer downsizes it. */
+  imageMaxPixels: z.number().step(1).min(1).default(DEFAULT_IMAGE_MAX_PIXELS).volatile(),
+  /** Encoded-byte target for one request image. */
+  imageMaxBytes: z.number().step(1).min(1).default(DEFAULT_IMAGE_MAX_BYTES).volatile(),
   /** Default reasoning level; `off` sends no thinkingConfig at all. */
   thinkingLevel: z.union(THINKING_LEVELS).default('off').volatile(),
   /**
@@ -425,6 +444,9 @@ export function resolveOptions(raw) {
     modelName,
     contextWindow: positiveInteger(raw.contextWindow ?? DEFAULT_CONTEXT_WINDOW, 'contextWindow'),
     maxTokens: positiveInteger(raw.maxTokens ?? DEFAULT_MAX_TOKENS, 'maxTokens'),
+    streamIdleTimeoutMs: positiveInteger(raw.streamIdleTimeoutMs ?? DEFAULT_STREAM_IDLE_TIMEOUT_MS, 'streamIdleTimeoutMs'),
+    imageMaxPixels: positiveInteger(raw.imageMaxPixels ?? DEFAULT_IMAGE_MAX_PIXELS, 'imageMaxPixels'),
+    imageMaxBytes: positiveInteger(raw.imageMaxBytes ?? DEFAULT_IMAGE_MAX_BYTES, 'imageMaxBytes'),
     thinkingLevel,
     proxy,
   }
@@ -555,25 +577,101 @@ function replayPart(part) {
   return out
 }
 
+/** The attachment-layer projection this route asks for one request image. */
+function imageTargetOf(image, config) {
+  return {
+    ...requestImageDimensions(image.width, image.height, config.imageMaxPixels),
+    maxBytes: config.imageMaxBytes,
+  }
+}
+
+/**
+ * Resolve request image bytes and replace offloaded images with text handles.
+ * @param {Array} messages - provider-neutral history.
+ * @param {object} config - validated settings.
+ * @param {object} attachments - mounted attachment service, when present.
+ * @param {Function} imageAccess - resolves the execution-world path of one image.
+ * @param {AbortSignal} signal - request cancellation.
+ * @returns {Promise<{messages: Array, versions: Map}>} projected history and bytes.
+ */
+export async function prepareRequestImages(messages, config, attachments, imageAccess, signal) {
+  const projected = projectOffloadedImages(messages, (ref) => offloadedImageText(ref, imageAccess?.(ref)))
+  if (!projected.some((message) => contentHasImage(message.content))) {
+    return { messages: projected, versions: new Map() }
+  }
+  if (attachments === undefined) {
+    throw new LlmError('llm-gemini-argon: image input requires the mounted attachment service', 'UNSUPPORTED_CONTENT')
+  }
+  const refs = new Map()
+  for (const message of projected) {
+    if (!contentHasImage(message.content)) continue
+    if (message.role !== 'user' && message.role !== 'tool') {
+      throw new LlmError('llm-gemini-argon: images are supported only in user messages and tool results', 'UNSUPPORTED_CONTENT')
+    }
+    for (const block of message.content) {
+      if (block.type === 'image' && !refs.has(block.attachment.attachmentId)) {
+        refs.set(block.attachment.attachmentId, block.attachment)
+      }
+    }
+  }
+  const versions = new Map()
+  for (const [id, ref] of refs) {
+    versions.set(id, await attachments.readImageRequest(ref, imageTargetOf(ref, config), signal))
+  }
+  return { messages: projected, versions }
+}
+
+/** Build one Gemini `inlineData` part from a prepared request image. */
+function imagePart(block, images) {
+  const version = images.get(block.attachment.attachmentId)
+  if (version === undefined) {
+    throw new LlmError('llm-gemini-argon: request image is missing from the prepared set', 'INVALID_REQUEST')
+  }
+  return {
+    inlineData: {
+      mimeType: version.mediaType,
+      data: Buffer.from(version.data).toString('base64'),
+    },
+  }
+}
+
 /**
  * Convert provider-neutral messages into one Gemini `GenerateContent` body.
  * Exported for tests; the adapter is the only production caller.
  */
-export function buildRequestBody(options, config) {
+export function buildRequestBody(options, config, images = new Map()) {
   const systemTexts = []
   const contents = []
   const callNames = new Map()
+  /** Tool calls that arrived without a Gemini signature and were projected as text. */
+  const degradedCalls = new Set()
   const thinkingLevel = String(options.reasoningEffort ?? config.thinkingLevel)
   if (typeof options.system === 'string' && options.system.length > 0) systemTexts.push(options.system)
 
-  const push = (role, parts) => {
+  // Vertex rejects a functionResponse turn that also carries text or inline
+  // data ("Requests ending with a model turn are not supported"), so a turn's
+  // kind decides whether the next same-role content may merge into it.
+  let lastRole
+  let lastKind
+  const push = (role, parts, kind = 'normal') => {
     if (parts.length === 0) return
-    const previous = contents.at(-1)
-    if (previous?.role === role) previous.parts.push(...parts)
+    const mergeable = lastRole === role && (kind === 'function-response' ? lastKind === 'function-response' : lastKind !== 'function-response')
+    if (mergeable) contents.at(-1).parts.push(...parts)
     else contents.push({ role, parts })
+    lastRole = role
+    lastKind = kind
+  }
+
+  // Images carried by tool results cannot live in the functionResponse turn
+  // itself; they are collected and appended as the next plain user turn.
+  const toolImages = []
+  const flushToolImages = () => {
+    if (toolImages.length === 0) return
+    push('user', toolImages.splice(0))
   }
 
   for (const message of options.messages ?? []) {
+    if (message.role !== 'tool') flushToolImages()
     if (message.role === 'developer' || message.role === 'system') {
       const text = textOf(message.content)
       if (text.length > 0) systemTexts.push(text)
@@ -584,8 +682,7 @@ export function buildRequestBody(options, config) {
       const parts = []
       for (const block of message.content) {
         if (block.type === 'text' && block.text.length > 0) parts.push({ text: block.text })
-        // Input modalities are text-only, so the runtime projects images to text
-        // before dispatch. A stray image block is skipped rather than guessed at.
+        else if (block.type === 'image') parts.push(imagePart(block, images))
       }
       push('user', parts)
       continue
@@ -593,7 +690,7 @@ export function buildRequestBody(options, config) {
 
     if (message.role === 'assistant') {
       const replay = readReplay(message.source?.replayState)
-      if (thinkingLevel !== 'off' && replay?.parts !== undefined) {
+      if (replay?.parts !== undefined && replay.parts.length > 0 && replay.blocks?.length === message.content.length) {
         const parts = replay.parts.map(replayPart).filter((part) => part !== undefined)
         if (parts.length > 0) {
           for (const block of message.content) {
@@ -612,10 +709,18 @@ export function buildRequestBody(options, config) {
           }
         } else if (block.type === 'tool-call' && typeof block.name === 'string' && block.name.length > 0) {
           callNames.set(block.id, block.name)
-          parts.push({
-            functionCall: { name: block.name, args: parseArguments(block.arguments) },
-            ...(typeof signature === 'string' ? { thoughtSignature: signature } : {}),
-          })
+          if (typeof signature === 'string') {
+            parts.push({
+              functionCall: { name: block.name, args: parseArguments(block.arguments) },
+              thoughtSignature: signature,
+            })
+          } else {
+            // A call produced by another provider has no Gemini signature. Vertex
+            // rejects such a functionCall part outright, so project the exchange
+            // as text and keep the conversation usable across model switches.
+            degradedCalls.add(block.id)
+            parts.push({ text: `[Tool call ${block.name}(${block.arguments || '{}'}) from an earlier model turn]` })
+          }
         }
       }
       push('model', parts)
@@ -625,11 +730,24 @@ export function buildRequestBody(options, config) {
     if (message.role === 'tool') {
       const name = callNames.get(message.toolCallId) ?? 'tool'
       const text = textOf(message.content)
+      const degraded = message.toolCallId === undefined || degradedCalls.has(message.toolCallId) || !callNames.has(message.toolCallId)
+      const imageParts = []
+      for (const block of message.content) if (block.type === 'image') imageParts.push(imagePart(block, images))
+      if (degraded) {
+        flushToolImages()
+        push('user', [{
+          text: `[${message.isError === true ? 'Tool error' : 'Tool result'} from ${name}: ${text || '(no output)'}]`,
+        }, ...imageParts])
+        continue
+      }
       const response = message.isError === true ? { error: text || 'tool failed' } : { result: text }
-      push('user', [{ functionResponse: { name, response } }])
+      push('user', [{ functionResponse: { name, response } }], 'function-response')
+      toolImages.push(...imageParts)
       continue
     }
   }
+
+  flushToolImages()
 
   if (contents.length === 0) {
     throw new LlmError('llm-gemini-argon: request has no conversation messages', 'INVALID_REQUEST')
@@ -659,7 +777,7 @@ export function buildRequestBody(options, config) {
 }
 
 /** Decode `text/event-stream` frames from a fetch body. */
-async function* parseSse(body) {
+async function* parseSse(body, onActivity) {
   const reader = body.getReader()
   const decoder = new TextDecoder()
   let buffer = ''
@@ -680,6 +798,7 @@ async function* parseSse(body) {
     for (;;) {
       const { done, value } = await reader.read()
       if (done) break
+      onActivity?.()
       buffer += decoder.decode(value, { stream: true })
       drain(false)
       while (events.length > 0) {
@@ -770,10 +889,12 @@ function statusTextOf(response) {
 
 /** One route's Vertex AI streaming adapter. */
 export class GeminiArgonAdapter extends LlmAdapter {
-  constructor({ options, resolveAuth }) {
+  constructor({ options, resolveAuth, resolveAttachments, imageAccess }) {
     super()
     this.options = options
     this.resolveAuth = resolveAuth
+    this.resolveAttachments = resolveAttachments
+    this.imageAccess = imageAccess
   }
 
   providerInfo(provider) {
@@ -787,7 +908,7 @@ export class GeminiArgonAdapter extends LlmAdapter {
       id: config.model,
       name: config.modelName,
       description: 'Gemini 4 Argon on Google Vertex AI',
-      inputModalities: ['text'],
+      inputModalities: ['text', 'image'],
     }]
   }
 
@@ -802,7 +923,7 @@ export class GeminiArgonAdapter extends LlmAdapter {
       name: config.modelName,
       context: { contextWindow: config.contextWindow },
       defaultMaxTokens: config.maxTokens,
-      inputModalities: ['text'],
+      inputModalities: ['text', 'image'],
       reasoning: {
         efforts: [
           { id: 'off', name: 'Off' },
@@ -815,20 +936,44 @@ export class GeminiArgonAdapter extends LlmAdapter {
     }
   }
 
+  /** Keep the runtime's image projection identical to the bytes this adapter sends. */
+  imageRequestTarget(_provider, _model, image) {
+    return imageTargetOf(image, this.options())
+  }
+
   /**
    * Stream one model call as harness chunks.
    * @param {object} options - provider-neutral request.
    */
   async *stream(options) {
     const config = this.options()
-    const body = buildRequestBody(options, config)
+    const { messages, versions } = await prepareRequestImages(
+      options.messages,
+      config,
+      this.resolveAttachments?.(),
+      this.imageAccess,
+      options.signal,
+    )
+    const body = buildRequestBody({ ...options, messages }, config, versions)
     const url = endpointOf(config, options.model)
+
+    // Reset on every streamed chunk: a provider that accepts the request but
+    // never answers must fail as TIMEOUT (which the retry policy can repeat)
+    // instead of hanging the session forever.
+    const idle = new AbortController()
+    let timer
+    const pulse = () => {
+      clearTimeout(timer)
+      timer = setTimeout(() => idle.abort(new Error('idle timeout')), config.streamIdleTimeoutMs)
+    }
+    pulse()
+    const signal = options.signal === undefined ? idle.signal : AbortSignal.any([options.signal, idle.signal])
 
     const send = async (auth) => {
       const proxy = await proxyFor(config, url, process.env)
       return fetchRequest(url, {
         method: 'POST',
-        signal: options.signal,
+        signal,
         redirect: 'error',
         headers: {
           ...attributionHeaders(),
@@ -840,34 +985,44 @@ export class GeminiArgonAdapter extends LlmAdapter {
       }, proxy)
     }
 
-    let auth
-    let response
     try {
-      auth = await this.resolveAuth()
-      response = await send(auth)
-      // A cached service account token can expire early (clock skew, revocation);
-      // refresh once and retry before surfacing the 401.
-      if (response.status === 401 && auth.invalidate !== undefined) {
-        await response.body?.cancel().catch(() => {})
-        auth.invalidate()
-        auth = await this.resolveAuth(true)
+      let auth
+      let response
+      try {
+        auth = await this.resolveAuth()
         response = await send(auth)
+        // A cached service account token can expire early (clock skew, revocation);
+        // refresh once and retry before surfacing the 401.
+        if (response.status === 401 && auth.invalidate !== undefined) {
+          await response.body?.cancel().catch(() => {})
+          auth.invalidate()
+          auth = await this.resolveAuth(true)
+          response = await send(auth)
+        }
+      } catch (error) {
+        if (idle.signal.aborted) {
+          throw new LlmError(`llm-gemini-argon: Vertex AI stream idle timeout after ${config.streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })
+        }
+        if (error instanceof LlmError) throw error
+        if (options.signal?.aborted) throw new LlmError('llm-gemini-argon: request aborted', 'ABORTED', { cause: error })
+        throw new LlmError('llm-gemini-argon: Vertex AI transport failed', 'TRANSPORT', { cause: error })
       }
-    } catch (error) {
-      if (error instanceof LlmError) throw error
-      if (options.signal?.aborted) throw new LlmError('llm-gemini-argon: request aborted', 'ABORTED', { cause: error })
-      throw new LlmError('llm-gemini-argon: Vertex AI transport failed', 'TRANSPORT', { cause: error })
-    }
 
-    if (!response.ok) throw await httpFailure(response)
-    if (response.body === null) throw new LlmError('llm-gemini-argon: Vertex AI returned no response body', EMPTY_RESPONSE_CODE)
+      if (!response.ok) throw await httpFailure(response)
+      if (response.body === null) throw new LlmError('llm-gemini-argon: Vertex AI returned no response body', EMPTY_RESPONSE_CODE)
 
-    try {
-      yield* translate(parseSse(response.body), options, config)
-    } catch (error) {
-      if (options.signal?.aborted) throw new LlmError('llm-gemini-argon: request aborted', 'ABORTED', { cause: error })
-      if (error instanceof LlmError) throw error
-      throw new LlmError('llm-gemini-argon: Vertex AI stream failed', 'TRANSPORT', { cause: error })
+      try {
+        yield* translate(parseSse(response.body, pulse), options, config)
+      } catch (error) {
+        if (idle.signal.aborted) {
+          throw new LlmError(`llm-gemini-argon: Vertex AI stream idle timeout after ${config.streamIdleTimeoutMs}ms`, 'TIMEOUT', { cause: error })
+        }
+        if (options.signal?.aborted) throw new LlmError('llm-gemini-argon: request aborted', 'ABORTED', { cause: error })
+        if (error instanceof LlmError) throw error
+        throw new LlmError('llm-gemini-argon: Vertex AI stream failed', 'TRANSPORT', { cause: error })
+      }
+    } finally {
+      clearTimeout(timer)
     }
   }
 }
@@ -1027,7 +1182,20 @@ export function apply(ctx, config) {
     return { kind: 'api-key', headers: { 'x-goog-api-key': await resolveApiKey(current) } }
   }
 
-  const adapter = new GeminiArgonAdapter({ options, resolveAuth })
+  const adapter = new GeminiArgonAdapter({
+    options,
+    resolveAuth,
+    resolveAttachments: () => ctx.get('attachments'),
+    imageAccess: (ref) => {
+      const attachments = ctx.get('attachments')
+      if (attachments === undefined) return undefined
+      return resolveImageAttachmentAccess(
+        attachments,
+        (hostPath) => ctx.get('fs')?.processPathFromHostPath(hostPath),
+        ref,
+      )
+    },
+  })
   ctx.llm.registerConfigurableProviders([{
     provider: PROVIDER,
     displayName: 'Google Vertex AI',

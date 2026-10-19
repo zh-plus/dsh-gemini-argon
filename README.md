@@ -20,7 +20,10 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 ## 核心特性
 
 - **流式输出与思考摘要**：支持流式文本生成与思考过程输出（`thinkingLevel` 可配置为 `off` / `low` / `medium` / `high`）。
-- **原生多轮工具调用**：基于原生 function calling，在多轮对话中自动保存并回放 `thoughtSignature`。
+- **原生多轮工具调用**：基于原生 function calling，完整回放原生 parts 与 `thoughtSignature`，思考模式下也能稳定续接。
+- **图片输入**：用户消息和工具结果中的图片会按路由预算缩放，并以 Gemini `inlineData` 发送。
+- **跨 Provider 工具历史**：来自其他模型的工具调用没有 Gemini 签名，插件会自动降级为文本，切换模型不再触发 400。
+- **流式稳定性**：长时间收不到数据会以 `TIMEOUT` 失败并交给重试策略，不会无限挂起。
 - **精细化用量统计**：完整统计输入、输出、思考 token 以及缓存命中情况。
 - **智能代理探测**：支持从环境变量、macOS 系统代理（`scutil`）自动探测代理，或通过配置显式指定。
 - **API Key 凭据**：默认接入 DSH 的 credentials 服务，同时支持通过启动环境变量注入。
@@ -36,7 +39,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.3.0
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.4.0
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
@@ -133,6 +136,9 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 | `modelName` | `Gemini 4 Argon` | 在模型选择器中展示的名称。 |
 | `contextWindow` | `1048576` | 模型上下文窗口大小。 |
 | `maxTokens` | `65536` | 默认最大输出 Token 数。 |
+| `streamIdleTimeoutMs` | `300000` | 流式响应允许的最长无数据间隔；超时以 `TIMEOUT` 失败，交给重试策略。 |
+| `imageMaxPixels` | `4194304` | 单张请求图片的最大像素数，超过时由 attachment 层等比缩放。 |
+| `imageMaxBytes` | `2097152` | 单张请求图片的编码字节目标。 |
 | `thinkingLevel` | `off` | 思考模式级别。设为非 `off` 时会发送 `thinkingConfig` 并在多轮对话中回放思考 parts。 |
 | `proxy` | `auto` | 代理策略。`auto` 会依次读取环境变量和 macOS 系统代理；也可设为 `direct`（直连）或具体的代理 URL。 |
 
@@ -159,15 +165,17 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 
 - **认证方式**：API Key 模式通过 `x-goog-api-key` 请求头认证；service account 模式先用 RS256 JWT 向 `token_uri` 换取 OAuth2 access token，再以 `Authorization: Bearer` 调用 Vertex。
 - **流式解析**：按 SSE 协议解析响应流，将每个数据块实时转换为 DSH 标准事件（`text-delta` / `reasoning-delta` / `tool-call-delta` / `usage` / `finish`）。
-- **状态与签名回放**：每次收到响应后，插件会将原生 parts 及每个 block 的 `thoughtSignature` 存入 DSH 的 `replayState`；在下一轮对话中将签名原样回放，从而避免工具调用触发 `400` 错误。
+- **状态与签名回放**：每次收到响应后，插件会把原生 parts（文本、思考、functionCall、`thoughtSignature`）和每个 block 的签名存入 DSH 的 `replayState`；下一轮原样回放。没有 Gemini 签名的历史工具调用会降级为 `[Tool call ...]` / `[Tool result ...]` 文本，避免 Vertex 400。
+- **图片**：按 `imageMaxPixels` / `imageMaxBytes` 生成请求版本，再以 `inlineData`（base64 + MIME）发送；已 offload 的图片会变成文本占位符。
+- **稳定性**：每收到一个数据块都会重置 idle 计时器；超时中止请求并报 `TIMEOUT`（默认重试策略会重试）。
 - **网络与代理**：请求底层基于 `undici` 的 `ProxyAgent` 发出。代理探测优先级为：`proxy` 显式配置 > `HTTPS_PROXY` / `ALL_PROXY` 等环境变量 > macOS `scutil --proxy` > 直连。
 
 ## 已知限制
 
 - **认证方式**：支持 Express API Key 和 service account JSON；不支持 metadata server / Workload Identity Federation 自动发现。
-- **输入模态**：当前输入模态声明为纯文本，图片输入会被 DSH 转换为文本占位符。
-- **思考模式稳定性**：开启思考模式（`thinkingLevel` 非 `off`）时，包含工具调用历史的长会话偶发响应卡顿，因此默认设为关闭。
-- **跨模型切换**：从其他 Provider 切换到本模型时，由于历史工具调用记录缺少 Gemini 专属签名，请求可能会被接口拒绝。建议在长工具会话中固定使用 Gemini 4 Argon。
+- **图片范围**：只支持用户消息和工具结果中的图片；图片会按 `imageMaxPixels` / `imageMaxBytes` 等比缩放，超大图会损失细节。
+- **思考成本**：思考模式会增加延迟和输出 token；虽然已支持完整 parts 回放，但极长的思考仍可能触发 idle timeout，可调大 `streamIdleTimeoutMs`。
+- **跨模型切换**：其他 Provider 产生的工具调用会降级为文本以保持会话可用，原生 `functionCall` / `thoughtSignature` 语义会丢失（工具结果仍然保留）。
 
 ## 常见问题 (FAQ)
 
@@ -178,16 +186,21 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 说明当前用 API Key 发了请求，但该端点只接受 OAuth2 凭据。检查 `auth` 是否被固定为 `api-key`；如果该环境提供的是 service account JSON，改为 `auth: service-account` 或直接配置 `serviceAccountFile`。
 
 ### 请求一直挂起不返回
-绝大多数情况属于网络连通性问题。Node.js 原生 `fetch` 不会自动读取 macOS 系统代理。请确保 `proxy` 保持为 `auto`（默认）或显式指定代理地址（如 `http://127.0.0.1:7897`），修改后重启应用。
+
+先看是不是网络：Node.js 原生 `fetch` 不会自动读取 macOS 系统代理，请确认 `proxy` 为 `auto`（默认）或显式代理。若网络正常但仍无数据，插件会在 `streamIdleTimeoutMs`（默认 5 分钟）后以 `TIMEOUT` 中止并交给重试策略；思考任务较多时可适当调大该值。
 
 ### 400 `Function call is missing a thought_signature`
-会话历史中的工具调用缺少签名信息。通常发生在从其他 Provider 中途切换至本模型，或手动裁剪了 `replayState` 时。进行多轮工具调用时，建议全程固定使用 Gemini 4 Argon。
+
+说明有一个 Gemini 生成的工具调用丢了签名（例如手动裁剪了 `replayState`、会话被外部编辑）。其他 Provider 产生的工具调用不会触发该错误：插件会自动降级为文本。若确认是 Gemini 自己的历史被破坏，只能新建会话或让该工具调用重新执行一次。
 
 ### `MISSING_CREDENTIAL`
 未能解析到有效的 API Key。请前往 **Settings → Models** 重新填写，或在启动环境中导出 `GOOGLE_VERTEX_API_KEY`；如果使用 service account，确认 `serviceAccountFile` 路径可读。
 
 ### 400 `invalid_grant` / `invalid JWT signature`
 service account 私钥与 `client_email` 不匹配、系统时间偏差过大，或密钥已被撤销。检查 JSON 是完整的密钥文件、校准系统时间；轮换密钥后重启应用。
+
+### 图片没有生效或报 `UNSUPPORTED_CONTENT`
+确认当前 profile 挂载了 attachment 服务（官方 desktop/web profile 默认有）；图片只能出现在用户消息或工具结果中；同时检查 `imageMaxPixels` / `imageMaxBytes` 是否被设得过小。
 
 ### `project is required`
 缺少 Google Cloud 项目配置。请在 profile 补丁文件中补充 `project` 字段、在 service account JSON 中提供 `project_id`，或导出 `GOOGLE_CLOUD_PROJECT`。
@@ -202,7 +215,13 @@ service account 私钥与 `client_email` 不匹配、系统时间偏差过大，
 node test/service-account.test.mjs
 ```
 
-真实调用测试（会访问 Vertex，覆盖文本生成、工具调用及工具结果回放）：
+离线图片 / 降级 / 超时测试（mock attachment 和 mock Vertex，验证 inlineData、跨 Provider 降级与 idle timeout）：
+
+```sh
+node test/images-and-degrade.test.mjs
+```
+
+真实调用测试（会访问 Vertex，覆盖文本、图片、工具调用、工具结果回放与跨 Provider 工具历史）：
 
 ```sh
 GKEY=... GOOGLE_CLOUD_PROJECT=... node --preserve-symlinks test/live.test.mjs
