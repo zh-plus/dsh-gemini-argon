@@ -245,6 +245,7 @@ window.__ModuleLoader__.load({
         const [message, setMessage] = React.useState(undefined)
         const [messageBad, setMessageBad] = React.useState(false)
         const [confirmClear, setConfirmClear] = React.useState(false)
+        const [confirmClearSa, setConfirmClearSa] = React.useState(false)
         const fileInput = React.useRef(null)
         const form = React.useMemo(() => ctx.configForms.get(NS), [])
         const snap = useForm(form)
@@ -263,16 +264,20 @@ window.__ModuleLoader__.load({
         const authMode = draft?.auth ?? value?.auth ?? 'auto'
         const serviceAccountConfigured = authMode === 'service-account'
           || (authMode === 'auto' && ((draft?.serviceAccountFile ?? value?.serviceAccountFile) !== undefined))
+        const storedServiceAccount = Boolean(value?.serviceAccountFile) || Boolean(value?.serviceAccountJson)
         const dirty = React.useMemo(() => {
           if (value === undefined || draft === null) return false
           return ALL_FIELDS.some((field) => normalized(field, value[field.key]) !== normalized(field, draft[field.key]))
         }, [draft, value])
 
         React.useEffect(() => {
-          if (!confirmClear) return undefined
-          const timer = setTimeout(() => setConfirmClear(false), 4000)
+          if (!confirmClear && !confirmClearSa) return undefined
+          const timer = setTimeout(() => {
+            setConfirmClear(false)
+            setConfirmClearSa(false)
+          }, 4000)
           return () => clearTimeout(timer)
-        }, [confirmClear])
+        }, [confirmClear, confirmClearSa])
 
         const chooseFile = (event) => {
           const file = event.target.files?.[0]
@@ -374,6 +379,39 @@ window.__ModuleLoader__.load({
           }
         }
 
+        const clearServiceAccount = async () => {
+          if (!confirmClearSa) {
+            setConfirmClearSa(true)
+            return
+          }
+          setConfirmClearSa(false)
+          setBusy(true)
+          setMessage(undefined)
+          try {
+            const ops = []
+            if (value.serviceAccountFile !== undefined) ops.push({ op: 'unset', path: ['serviceAccountFile'] })
+            if (value.serviceAccountJson !== undefined) ops.push({ op: 'unset', path: ['serviceAccountJson'] })
+            if ((value.auth ?? 'auto') === 'service-account') ops.push({ op: 'set', path: ['auth'], value: 'api-key' })
+            if (ops.length > 0) {
+              const accepted = await form.mutate(ops, snap.revision)
+              if (!accepted) {
+                setMessageBad(true)
+                setMessage('清除失败：配置不可写，或版本已变化，请点“重新读取”后再试')
+                return
+              }
+            }
+            setDraft(null)
+            setKeyDraft('')
+            setMessageBad(false)
+            setMessage('已清除 Service Account 配置；JSON 文件本身未删除')
+          } catch (error) {
+            setMessageBad(true)
+            setMessage(`清除失败：${error instanceof Error ? error.message : String(error)}`)
+          } finally {
+            setBusy(false)
+          }
+        }
+
         const statusDot = serviceAccountConfigured
           ? h('span', { style: S.hint }, '认证：Service Account JSON')
           : props.keyConfigured === true
@@ -405,6 +443,7 @@ window.__ModuleLoader__.load({
         return h('div', { style: S.editor, 'data-gemini-argon-config': '' },
           head,
           open ? h(React.Fragment, null,
+            h('span', { style: S.hintWarn }, '右上角“编辑”打开的是 DSH 通用编辑器，第三方 provider 不会渲染字段；请使用本卡片。'),
             h('input', {
               type: 'file',
               accept: '.json,application/json',
@@ -453,28 +492,54 @@ window.__ModuleLoader__.load({
               }, '放弃修改'),
               h('button', { type: 'button', style: { ...S.secondary, ...(busy ? S.disabled : {}) }, disabled: busy, onClick: reload }, '重新读取'),
               h('div', { style: S.spacer }),
-              confirmClear
-                ? h('div', { style: S.confirmGroup },
-                    h('span', { style: S.hintWarn }, `确认清除 ${keyRef}？`),
-                    h('button', {
+              storedServiceAccount
+                ? confirmClearSa
+                  ? h('div', { style: S.confirmGroup },
+                      h('span', { style: S.hintWarn }, '确认清除 Service Account 配置？'),
+                      h('button', {
+                        type: 'button',
+                        style: { ...S.dangerConfirm, ...(busy ? S.disabled : {}) },
+                        disabled: busy,
+                        onClick: clearServiceAccount,
+                      }, '确认清除'),
+                      h('button', {
+                        type: 'button',
+                        style: { ...S.small, ...(busy ? S.disabled : {}) },
+                        disabled: busy,
+                        onClick: () => setConfirmClearSa(false),
+                      }, '取消'),
+                    )
+                  : h('button', {
                       type: 'button',
-                      style: { ...S.dangerConfirm, ...(busy ? S.disabled : {}) },
-                      disabled: busy,
-                      onClick: removeKey,
-                    }, '确认清除'),
-                    h('button', {
+                      style: { ...S.danger, ...(!writable || busy ? S.disabled : {}) },
+                      disabled: !writable || busy,
+                      onClick: () => setConfirmClearSa(true),
+                    }, '清除 Service Account 配置')
+                : null,
+              props.keyConfigured === true
+                ? confirmClear
+                  ? h('div', { style: S.confirmGroup },
+                      h('span', { style: S.hintWarn }, `确认清除 ${keyRef}？`),
+                      h('button', {
+                        type: 'button',
+                        style: { ...S.dangerConfirm, ...(busy ? S.disabled : {}) },
+                        disabled: busy,
+                        onClick: removeKey,
+                      }, '确认清除'),
+                      h('button', {
+                        type: 'button',
+                        style: { ...S.small, ...(busy ? S.disabled : {}) },
+                        disabled: busy,
+                        onClick: () => setConfirmClear(false),
+                      }, '取消'),
+                    )
+                  : h('button', {
                       type: 'button',
-                      style: { ...S.small, ...(busy ? S.disabled : {}) },
-                      disabled: busy,
-                      onClick: () => setConfirmClear(false),
-                    }, '取消'),
-                  )
-                : h('button', {
-                    type: 'button',
-                    style: { ...S.danger, ...(!writable || busy ? S.disabled : {}) },
-                    disabled: !writable || busy,
-                    onClick: () => setConfirmClear(true),
-                  }, '清除 API Key'),
+                      style: { ...S.danger, ...(!writable || busy ? S.disabled : {}) },
+                      disabled: !writable || busy,
+                      onClick: () => setConfirmClear(true),
+                    }, '清除 API Key')
+                : null,
             ),
             message === undefined ? null : h('span', { style: messageBad ? S.hintError : S.hintOk, role: 'status' }, message),
           ) : null,

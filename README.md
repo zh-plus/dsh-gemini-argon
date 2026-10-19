@@ -40,7 +40,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.6.5
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.6.6
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
@@ -60,6 +60,10 @@ dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
 保存后写入 profile 的 `cordis.patch.yml`，下一次模型请求生效，无需重启。内联的 `serviceAccountJson` 刻意没有放进 UI（避免私钥明文进配置），需要时仍可通过文件或 `GOOGLE_APPLICATION_CREDENTIALS`。
 
 **Service Account JSON 路径**一栏旁边有 **浏览…** 按钮：桌面端会调起系统文件选择器（只接受 `.json`），选中后填入文件的绝对路径；内容不会被读取或上传，只存路径。CLI / 远程连接等没有桌面文件桥的环境仍可手动输入，支持 `~`。
+
+**清除 Service Account 配置** 会清空 `serviceAccountFile` / `serviceAccountJson`，并在 `auth: service-account` 时切回 `api-key`；**不会删除本机的 JSON 文件**。该按钮只在检测到已保存的 JSON 配置时出现，同样需要二次确认。
+
+> Models 页右上角的 **编辑** 是 DSH 自带的通用 provider 编辑器；它只对内置的 `llm-deepseek` / `llm-pi-ai` 渲染字段，第三方 provider 会显示“其余字段在 cordis.patch.yml 中”的提示。请使用本插件卡片里的 **编辑配置**；再点一次 **编辑** 可以收起那个空卡片。
 
 下面的 YAML 写法适用于 CLI / headless，或想直接编辑配置文件的情况。
 
