@@ -5,7 +5,7 @@
  */
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
-import { GeminiArgonAdapter, resolveOptions } from 'dsh-gemini-argon'
+import { GeminiArgonAdapter, buildRequestBody, resolveOptions } from 'dsh-gemini-argon'
 
 const PNG = Buffer.from(
   'iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAIAAAAlC+aJAAAAUElEQVR42u3PQQkAAAgEsEvi2/55DGME38JgBZapfi0CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICApcFEWchD98r0aIAAAAASUVORK5CYII=',
@@ -147,7 +147,20 @@ const imageTurn = signedUserTurns.find((turn) => turn.parts.some((part) => part.
 assert.ok(imageTurn, 'the tool image must be sent in its own user turn')
 assert.ok(imageTurn.parts.some((part) => typeof part.text === 'string' && part.text.includes('What color')), 'the following user text may share the image turn')
 
-// 3. A provider that accepts the request but never streams fails as TIMEOUT.
+// 3. Thinking: "off" pins the minimum level Gemini 4 Argon supports and hides
+//    thoughts; explicit levels ask for the thought summaries.
+const simple = { messages: [{ role: 'user', content: [{ type: 'text', text: 'hi' }] }] }
+assert.deepEqual(buildRequestBody(simple, config).generationConfig.thinkingConfig, { thinkingLevel: 'LOW' })
+assert.deepEqual(
+  buildRequestBody(simple, { ...config, thinkingLevel: 'low' }).generationConfig.thinkingConfig,
+  { thinkingLevel: 'LOW', includeThoughts: true },
+)
+assert.deepEqual(
+  buildRequestBody(simple, { ...config, thinkingLevel: 'high' }).generationConfig.thinkingConfig,
+  { thinkingLevel: 'HIGH', includeThoughts: true },
+)
+
+// 4. A provider that accepts the request but never streams fails as TIMEOUT.
 const slow = createServer((_request, _response) => {
   // Deliberately never respond.
 })

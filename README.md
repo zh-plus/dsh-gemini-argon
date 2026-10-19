@@ -19,7 +19,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 
 ## 核心特性
 
-- **流式输出与思考摘要**：支持流式文本生成与思考过程输出（`thinkingLevel` 可配置为 `off` / `low` / `medium` / `high`）。
+- **流式输出与思考摘要**：支持流式文本生成与思考过程输出（`thinkingLevel` 可配置为 `off` / `low` / `medium` / `high`；`off` 为最低档 `LOW` 且不展示思考内容）。
 - **原生多轮工具调用**：基于原生 function calling，完整回放原生 parts 与 `thoughtSignature`，思考模式下也能稳定续接。
 - **图片输入**：用户消息和工具结果中的图片会按路由预算缩放，并以 Gemini `inlineData` 发送。
 - **跨 Provider 工具历史**：来自其他模型的工具调用没有 Gemini 签名，插件会自动降级为文本，切换模型不再触发 400。
@@ -39,7 +39,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.4.0
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.5.0
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
@@ -139,7 +139,7 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 | `streamIdleTimeoutMs` | `300000` | 流式响应允许的最长无数据间隔；超时以 `TIMEOUT` 失败，交给重试策略。 |
 | `imageMaxPixels` | `4194304` | 单张请求图片的最大像素数，超过时由 attachment 层等比缩放。 |
 | `imageMaxBytes` | `2097152` | 单张请求图片的编码字节目标。 |
-| `thinkingLevel` | `off` | 思考模式级别。设为非 `off` 时会发送 `thinkingConfig` 并在多轮对话中回放思考 parts。 |
+| `thinkingLevel` | `off` | 思考级别。`off` 固定为模型支持的最低档 `LOW` 且不返回思考内容（4 Argon 无法真正关闭思考）；`low` / `medium` / `high` 会返回并展示思考摘要。 |
 | `proxy` | `auto` | 代理策略。`auto` 会依次读取环境变量和 macOS 系统代理；也可设为 `direct`（直连）或具体的代理 URL。 |
 
 ### 自定义配置覆盖
@@ -174,7 +174,7 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 
 - **认证方式**：支持 Express API Key 和 service account JSON；不支持 metadata server / Workload Identity Federation 自动发现。
 - **图片范围**：只支持用户消息和工具结果中的图片；图片会按 `imageMaxPixels` / `imageMaxBytes` 等比缩放，超大图会损失细节。
-- **思考成本**：思考模式会增加延迟和输出 token；虽然已支持完整 parts 回放，但极长的思考仍可能触发 idle timeout，可调大 `streamIdleTimeoutMs`。
+- **思考成本**：Gemini 4 Argon 不支持真正关闭思考（`thinkingBudget: 0` 会被拒绝，`OFF` 不是合法级别）。`off` 会固定到最低档 `LOW` 并隐藏思考内容；档位越高，延迟和输出 token 越多。极长的思考仍可能触发 idle timeout，可调大 `streamIdleTimeoutMs`。
 - **跨模型切换**：其他 Provider 产生的工具调用会降级为文本以保持会话可用，原生 `functionCall` / `thoughtSignature` 语义会丢失（工具结果仍然保留）。
 
 ## 常见问题 (FAQ)
@@ -184,6 +184,10 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 
 ### 401 `API keys are not supported by this API`
 说明当前用 API Key 发了请求，但该端点只接受 OAuth2 凭据。检查 `auth` 是否被固定为 `api-key`；如果该环境提供的是 service account JSON，改为 `auth: service-account` 或直接配置 `serviceAccountFile`。
+
+### 能完全关闭思考吗？
+
+不能。`gemini-4-argon` 不接受 `thinkingBudget: 0`，也没有 `OFF` 档位。把 `thinkingLevel` 设为 `off` 时，插件会发送最低档 `LOW` 并关闭 `includeThoughts`：不会显示思考内容，内部思考也降到当前模型允许的最低水平。想要思考摘要就选 `low` / `medium` / `high`。
 
 ### 请求一直挂起不返回
 

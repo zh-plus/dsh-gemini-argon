@@ -105,7 +105,10 @@ export const Config = z.object({
   imageMaxPixels: z.number().step(1).min(1).default(DEFAULT_IMAGE_MAX_PIXELS).volatile(),
   /** Encoded-byte target for one request image. */
   imageMaxBytes: z.number().step(1).min(1).default(DEFAULT_IMAGE_MAX_BYTES).volatile(),
-  /** Default reasoning level; `off` sends no thinkingConfig at all. */
+  /**
+   * Default reasoning level. `off` pins the lowest level Gemini 4 Argon
+   * supports (LOW) and hides thought summaries; the model has no true off.
+   */
   thinkingLevel: z.union(THINKING_LEVELS).default('off').volatile(),
   /**
    * Outbound route: `auto` (environment, then the macOS system proxy),
@@ -769,9 +772,14 @@ export function buildRequestBody(options, config, images = new Map()) {
       ...(typeof maxOutputTokens === 'number' ? { maxOutputTokens } : {}),
       ...(typeof options.temperature === 'number' ? { temperature: options.temperature } : {}),
       ...(Array.isArray(options.stop) && options.stop.length > 0 ? { stopSequences: [...options.stop] } : {}),
-      ...(thinkingLevel !== 'off'
-        ? { thinkingConfig: { includeThoughts: true, thinkingLevel: thinkingLevel.toUpperCase() } }
-        : {}),
+      // Gemini 4 Argon cannot disable thinking (thinkingBudget is rejected and
+      // "OFF" is not a valid level). "off" therefore pins the minimum level the
+      // model supports and omits thought summaries; only explicit low/medium/high
+      // ask Vertex to return the thinking text.
+      thinkingConfig: {
+        thinkingLevel: (thinkingLevel === 'off' ? 'low' : thinkingLevel).toUpperCase(),
+        ...(thinkingLevel === 'off' ? {} : { includeThoughts: true }),
+      },
     },
   }
 }
