@@ -1,0 +1,26 @@
+# Bundle patch for dsh-gemini-argon.
+#
+# Keep this file portable: no project number, no proxy address, no key. Every
+# installation supplies the project number in its own profile patch layer:
+#
+#   - id: llm-gemini-argon
+#     name: "dsh-gemini-argon"
+#     config:
+#       project: "<your-google-cloud-project>"
+#
+# or exports GOOGLE_CLOUD_PROJECT. Express API keys do not carry a project, so
+# the adapter spells it out to reach the `global` endpoint, which is where
+# gemini-4-argon is served.
+- insert:
+    - id: llm-gemini-argon
+      name: "dsh-gemini-argon"
+      config:
+        apiKeyEnv: GOOGLE_VERTEX_API_KEY
+        location: global
+        model: gemini-4-argon
+        modelName: Gemini 4 Argon
+        contextWindow: 1048576
+        maxTokens: 65536
+        # Thinking is opt-in: tool-history replay with a thinking level enabled
+        # can stall on Vertex, so the default stays "off".
+        thinkingLevel: "off"
