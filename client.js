@@ -20,7 +20,7 @@ window.__ModuleLoader__.load({
     const NS = 'llm-gemini-argon'
     const DEFAULT_KEY_REF = 'GOOGLE_VERTEX_API_KEY'
 
-    const inject = ['slots', 'configForms', 'remote.credentials']
+    const inject = ['slots', 'configForms', 'remote', 'remote.credentials']
 
     const S = {
       editor: {
@@ -356,8 +356,19 @@ window.__ModuleLoader__.load({
           setMessage(undefined)
           try {
             const removed = await ctx.remote.credentials.unset(keyRef)
-            setMessageBad(removed.ok !== true)
-            setMessage(removed.ok ? `已清除 ${keyRef}` : `清除失败：${removed.error?.message ?? 'unknown error'}`)
+            if (removed.ok === true) {
+              setMessageBad(false)
+              setMessage(`已清除 ${keyRef}`)
+              // The parent row's credential join may lag; force one describe read
+              // so the status and the API-key dot catch up immediately.
+              void ctx.configForms.describe().load()
+            } else {
+              setMessageBad(true)
+              setMessage(`清除失败：${removed.error?.message ?? 'unknown error'}`)
+            }
+          } catch (error) {
+            setMessageBad(true)
+            setMessage(`清除失败：${error instanceof Error ? error.message : String(error)}`)
           } finally {
             setBusy(false)
           }

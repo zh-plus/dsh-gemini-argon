@@ -40,7 +40,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.6.4
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.6.5
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
