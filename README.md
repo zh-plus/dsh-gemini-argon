@@ -40,7 +40,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.7.0
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.7.2
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
@@ -260,6 +260,14 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 ### 行首圆点是红色，或没有圆点
 
 那是 DSH 的 API Key 状态指示，不反映 Service Account。使用 JSON 密钥时插件会隐藏这个红点；认证状态看卡片里的“认证：…”，想确认真实可用性就点 **测试连接**。
+
+### Service Account JSON 在 OneDrive / iCloud 里读不到
+
+云同步目录里的“按需下载”文件可能返回 `ETIMEDOUT`。插件不会因此拒绝挂载，但请求会以 `INVALID_CREDENTIAL` 失败并给出路径。把 JSON 移到本地目录（例如 `~/.config/gcloud/`），或在 Finder 里设为“始终保留在此设备”，然后用 **浏览…** 重新选择。
+
+### 与 DSH 版本的兼容性
+
+插件声明 `engines.dsh: ^0.2.1-rc.2`，同时兼容 DSH **0.2.1-rc.2** 和 **0.2.1-rc.3**。DSH 升级导致“与当前版本不兼容”时，先更新插件版本；`dsh.engines` 里的旧精确版本号会让安装器直接拒绝加载。
 
 ### `MISSING_CREDENTIAL`
 未能解析到有效的 API Key。请前往 **Settings → Models** 重新填写，或在启动环境中导出 `GOOGLE_VERTEX_API_KEY`；如果使用 service account，确认 `serviceAccountFile` 路径可读。

@@ -26,6 +26,7 @@
 import { execFile } from 'node:child_process'
 import { createHash, createSign } from 'node:crypto'
 import { readFileSync, statSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -218,6 +219,57 @@ function loadServiceAccountFile(path) {
   return value
 }
 
+let serviceAccountAsyncCache
+let serviceAccountAsyncInflight
+
+/**
+ * Read a key file without blocking the boot path. Cloud-synced folders can make
+ * a synchronous read hang (or throw ETIMEDOUT), so file-backed service accounts
+ * are allowed to materialize at request time.
+ */
+async function loadServiceAccountFileAsync(path) {
+  let stat
+  try {
+    stat = statSync(path)
+  } catch (error) {
+    if (error?.code === 'ENOENT') throw new LlmError(`llm-gemini-argon: service account file not found: ${path}`, 'INVALID_CREDENTIAL', { cause: error })
+    throw new LlmError(`llm-gemini-argon: cannot stat service account file "${path}": ${error?.message ?? error}`, 'INVALID_CREDENTIAL', { cause: error })
+  }
+  const cached = serviceAccountAsyncCache
+  if (cached !== undefined && cached.path === path && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size) {
+    return cached.value
+  }
+  if (serviceAccountAsyncInflight?.path === path) return serviceAccountAsyncInflight.promise
+  const promise = (async () => {
+    let text
+    try {
+      text = await readFile(path, { encoding: 'utf8', signal: AbortSignal.timeout(15_000) })
+    } catch (error) {
+      const reason = error?.name === 'TimeoutError' ? 'read timed out' : (error?.message ?? String(error))
+      throw new LlmError(
+        `llm-gemini-argon: cannot read service account file "${path}" (${reason}). If it lives in a cloud-synced folder, move it to a local path (for example ~/.config/gcloud/) or make it available offline.`,
+        'INVALID_CREDENTIAL',
+        { cause: error },
+      )
+    }
+    const value = parseServiceAccount(text, path)
+    serviceAccountAsyncCache = { path, mtimeMs: stat.mtimeMs, size: stat.size, value }
+    return value
+  })().finally(() => {
+    if (serviceAccountAsyncInflight?.path === path) serviceAccountAsyncInflight = undefined
+  })
+  serviceAccountAsyncInflight = { path, promise }
+  return promise
+}
+
+/** Resolve a deferred file descriptor into a parsed service account. */
+async function materializeServiceAccount(serviceAccount) {
+  if (serviceAccount === undefined) return undefined
+  if (typeof serviceAccount.privateKey === 'string') return serviceAccount
+  if (serviceAccount.kind === 'file') return loadServiceAccountFileAsync(serviceAccount.path)
+  throw new LlmError('llm-gemini-argon: invalid service account configuration', 'INVALID_CREDENTIAL')
+}
+
 /** Resolve the configured service account, if any. */
 function loadServiceAccount(raw) {
   if (isObject(raw.serviceAccountJson)) return parseServiceAccount(raw.serviceAccountJson, 'serviceAccountJson')
@@ -225,7 +277,14 @@ function loadServiceAccount(raw) {
   if (inline.length > 0) return parseServiceAccount(inline, 'serviceAccountJson')
   const file = String(raw.serviceAccountFile ?? '').trim() || String(process.env.GOOGLE_APPLICATION_CREDENTIALS ?? '').trim()
   if (file.length === 0) return undefined
-  return loadServiceAccountFile(expandHome(file))
+  const path = expandHome(file)
+  try {
+    return loadServiceAccountFile(path)
+  } catch (error) {
+    // A cloud-synced key may be unreadable at boot; keep the route mountable and
+    // retry with the async reader on the first request.
+    return { kind: 'file', path, deferredError: error }
+  }
 }
 
 function base64url(value) {
@@ -354,7 +413,7 @@ export function invalidateServiceAccountToken(serviceAccount) {
  * @returns {Promise<object>} `{ kind, headers, invalidate? }`.
  */
 export async function serviceAccountAuth(config, force = false) {
-  const serviceAccount = config.serviceAccount
+  const serviceAccount = await materializeServiceAccount(config.serviceAccount)
   if (serviceAccount === undefined) {
     throw new LlmError('llm-gemini-argon: service-account auth has no service account configured', 'INVALID_CREDENTIAL')
   }
