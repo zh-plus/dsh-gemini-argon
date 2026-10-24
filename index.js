@@ -70,6 +70,12 @@ const DEFAULT_TOKEN_URI = 'https://oauth2.googleapis.com/token'
 const CLOUD_PLATFORM_SCOPE = 'https://www.googleapis.com/auth/cloud-platform'
 /** Access tokens are refreshed this long before their reported expiry. */
 const TOKEN_REFRESH_MARGIN_MS = 5 * 60 * 1000
+/** First three 429 retries stay quick; later ones wait a full cooldown. */
+const RATE_LIMIT_QUICK_DELAYS_MS = [2_000, 5_000, 10_000]
+const RATE_LIMIT_COOLDOWN_MS = 60_000
+/** A 429 streak older than this is treated as a new episode. */
+const RATE_LIMIT_STREAK_WINDOW_MS = 2 * 60 * 1000
+const RATE_LIMIT_MAX_RETRIES = 5
 /** Error bodies are diagnostics, not payloads; keep logs and messages bounded. */
 const MAX_ERROR_BODY = 4000
 
@@ -316,6 +322,22 @@ export function serviceAccountJwt(serviceAccount, now = Math.floor(Date.now() / 
 }
 
 const tokenCache = new Map()
+
+/** Consecutive 429 counts per session, so retries follow a predictable cadence. */
+const rateLimitStreaks = new Map()
+
+function nextRateLimitDelay(key) {
+  const now = Date.now()
+  const previous = rateLimitStreaks.get(key)
+  const count = previous !== undefined && now - previous.at < RATE_LIMIT_STREAK_WINDOW_MS ? previous.count + 1 : 1
+  rateLimitStreaks.set(key, { count, at: now })
+  if (count <= RATE_LIMIT_QUICK_DELAYS_MS.length) return RATE_LIMIT_QUICK_DELAYS_MS[count - 1]
+  return RATE_LIMIT_COOLDOWN_MS
+}
+
+function clearRateLimitStreak(key) {
+  rateLimitStreaks.delete(key)
+}
 
 function tokenCacheKey(serviceAccount) {
   const digest = createHash('sha256').update(serviceAccount.privateKey).digest('hex')
@@ -1006,6 +1028,17 @@ export class GeminiArgonAdapter extends LlmAdapter {
     return { id: provider, name: 'Google Vertex AI' }
   }
 
+  providerRetryPolicy() {
+    return {
+      mode: 'normal',
+      maxRetries: RATE_LIMIT_MAX_RETRIES,
+      retryableCodes: ['EMPTY_RESPONSE', 'RATE_LIMIT', 'SERVER', 'TIMEOUT', 'TRANSPORT'],
+      initialDelayMs: 1_000,
+      maxDelayMs: RATE_LIMIT_COOLDOWN_MS,
+      jitterRatio: 0.1,
+    }
+  }
+
   async listModels(provider) {
     const config = this.options()
     return [{
@@ -1113,7 +1146,19 @@ export class GeminiArgonAdapter extends LlmAdapter {
         throw new LlmError('llm-gemini-argon: Vertex AI transport failed', 'TRANSPORT', { cause: error })
       }
 
-      if (!response.ok) throw await httpFailure(response)
+      if (!response.ok) {
+        const failure = await httpFailure(response)
+        if (failure.code === 'RATE_LIMIT') {
+          const delay = nextRateLimitDelay(String(options.sessionId ?? 'anonymous'))
+          throw new LlmError(failure.message, failure.code, {
+            ...(failure.failure?.status === undefined ? {} : { status: failure.failure.status }),
+            providerRetryAfterMs: delay,
+            cause: failure,
+          })
+        }
+        throw failure
+      }
+      clearRateLimitStreak(String(options.sessionId ?? 'anonymous'))
       if (response.body === null) throw new LlmError('llm-gemini-argon: Vertex AI returned no response body', EMPTY_RESPONSE_CODE)
 
       try {

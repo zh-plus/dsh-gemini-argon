@@ -40,7 +40,7 @@ DSH 内置的 `google-vertex` 路由基于 `pi-ai` 的静态模型目录，尚�
 dsh plugin --profile desktop add dsh-gemini-argon
 
 # 或固定到 GitHub 上的某个 tag
-dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.7.2
+dsh plugin --profile desktop add github:zh-plus/dsh-gemini-argon#v0.7.3
 
 # 或从本地开发目录安装
 dsh plugin --profile desktop add file:/path/to/dsh-gemini-argon
@@ -229,6 +229,17 @@ GOOGLE_VERTEX_API_KEY=... dsh --profile <name> "..."
 - **图片**：按 `imageMaxPixels` / `imageMaxBytes` 生成请求版本，再以 `inlineData`（base64 + MIME）发送；已 offload 的图片会变成文本占位符。
 - **稳定性**：每收到一个数据块都会重置 idle 计时器；超时中止请求并报 `TIMEOUT`（默认重试策略会重试）。
 - **网络与代理**：请求底层基于 `undici` 的 `ProxyAgent` 发出。代理探测优先级为：`proxy` 显式配置 > `HTTPS_PROXY` / `ALL_PROXY` 等环境变量 > macOS `scutil --proxy` > 直连。
+
+## 429 重试节奏
+
+Vertex 返回 `429 Resource exhausted` 时，插件不再沿用默认的指数退避，而是：
+
+- 前 3 次重试分别等待 **2 秒、5 秒、10 秒**
+- 之后每次重试等待 **60 秒**
+- 最多重试 **5 次**（总计 6 次尝试）后失败
+- 计数按 session 记录；任意成功请求会把计数清零；超过 2 分钟没有新的 429 也会重新计数
+
+其他错误（`SERVER` / `TIMEOUT` / `TRANSPORT` / `EMPTY_RESPONSE`）仍使用 1 秒起步、上限 60 秒的指数退避。
 
 ## 已知限制
 
